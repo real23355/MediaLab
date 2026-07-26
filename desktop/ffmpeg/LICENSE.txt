@@ -1,0 +1,23 @@
+FFmpeg / FFprobe distribution notice
+====================================
+
+PixelScope bundles prebuilt FFmpeg and FFprobe executables as separate programs.
+The bundled Windows x64 builds are distributed under GNU General Public License
+version 3 (GPL-3.0).
+
+FFmpeg project:
+https://ffmpeg.org/
+
+FFmpeg source code:
+https://ffmpeg.org/download.html#get-sources
+
+GNU General Public License version 3:
+https://www.gnu.org/licenses/gpl-3.0.html
+
+Binary package sources:
+https://www.npmjs.com/package/@ffmpeg-installer/win32-x64
+https://www.npmjs.com/package/@ffprobe-installer/win32-x64
+
+PixelScope communicates with these executables only through command-line
+arguments, standard output, and temporary files. No FFmpeg library is linked
+into PixelScope.

@@ -1,0 +1,19 @@
+# Dependencies and generated output
+node_modules/
+dist/
+release/
+.next/
+.vinext/
+.wrangler/
+out/
+coverage/
+
+# Local configuration and logs
+.env*
+*.log
+.DS_Store
+Thumbs.db
+
+# FFmpeg binaries are restored from the pinned installer packages.
+desktop/ffmpeg/bin/*.exe
+
