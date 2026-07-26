@@ -1306,7 +1306,7 @@ tbody tr.selected {
   }
 }
 
-/* VideoProbe V0.0.2 */
+/* MediaLab V0.0.3 */
 .brand-button {
   background: transparent;
   border: 0;
@@ -1464,9 +1464,71 @@ tbody tr.selected {
 
 .heic-stage img {
   display: block;
-  max-height: min(76vh, 900px);
-  max-width: 100%;
   object-fit: contain;
+}
+
+.zoom-toolbar {
+  align-items: center;
+  display: flex !important;
+  flex-direction: row !important;
+  gap: 5px !important;
+  margin-left: auto;
+}
+
+.zoom-toolbar button {
+  background: #f5f7f4;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 800;
+  height: 29px;
+  min-width: 31px;
+  padding: 0 8px;
+}
+
+.zoom-toolbar button:hover {
+  background: white;
+  border-color: var(--signal);
+}
+
+.zoom-toolbar .zoom-value {
+  font-family: monospace;
+  min-width: 55px;
+}
+
+.zoom-stage {
+  align-items: flex-start;
+  justify-content: flex-start;
+  overflow: auto;
+  padding: 16px;
+}
+
+.zoom-stage canvas,
+.zoom-stage img {
+  flex: 0 0 auto;
+  max-height: none;
+  max-width: none;
+  transform-origin: top left;
+}
+
+.image-viewer-panel:fullscreen {
+  background: #111a18;
+  border: 0;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.image-viewer-panel:fullscreen .viewer-header {
+  background: #f7f8f6;
+  flex: 0 0 56px;
+}
+
+.image-viewer-panel:fullscreen .zoom-stage {
+  flex: 1;
+  min-height: 0;
 }
 
 .stream-stats {

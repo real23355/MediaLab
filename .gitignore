@@ -7,6 +7,7 @@ release/
 .wrangler/
 out/
 coverage/
+/artifacts/
 
 # Local configuration and logs
 .env*
@@ -16,4 +17,3 @@ Thumbs.db
 
 # FFmpeg binaries are restored from the pinned installer packages.
 desktop/ffmpeg/bin/*.exe
-

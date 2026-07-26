@@ -10,6 +10,7 @@ const state = {
   activeDocId: "",
   yuvTimer: null,
   renderToken: 0,
+  sessionToken: 0,
   streamFile: null,
   stream: {
     analysis: null,
@@ -70,6 +71,7 @@ function clearDocuments() {
 }
 
 function returnHome() {
+  state.sessionToken += 1;
   clearDocuments();
   resetPlayback();
   state.pending = [];
@@ -79,11 +81,13 @@ function returnHome() {
   show($("#type-screen"), false);
   show($("#workspace"), false);
   show($("#new-file"), false);
+  show($("#restart-app"), false);
   show($("#toast"), false);
 }
 
 $("#new-file").addEventListener("click", returnHome);
 $("#brand-home").addEventListener("click", returnHome);
+$("#restart-app").addEventListener("click", () => window.desktop.restartApp());
 
 async function receiveInfos(infos) {
   if (!infos?.length) return;
@@ -101,6 +105,7 @@ async function receiveInfos(infos) {
   show($("#home"), false);
   show($("#type-screen"), true);
   show($("#new-file"), true);
+  show($("#restart-app"), true);
 }
 
 async function receiveDroppedFiles(files) {
@@ -166,6 +171,7 @@ function renderPendingList() {
 $("#parse-files").addEventListener("click", parsePendingFiles);
 
 async function parsePendingFiles() {
+  const sessionToken = state.sessionToken;
   const streamFiles = state.pending.filter((file) => file.kind === "h264" || file.kind === "h265");
   if (streamFiles.length && state.pending.length !== 1) {
     toast("H.264 / H.265 当前一次只支持一个文件，请返回首页后单独选择该码流。");
@@ -187,6 +193,12 @@ async function parsePendingFiles() {
     for (const file of state.pending) {
       if (file.kind === "yuv") docs.push(await createYuvDocument(file));
       else if (file.kind === "heic") docs.push(await createHeicDocument(file));
+      if (sessionToken !== state.sessionToken) {
+        docs.forEach((doc) => {
+          if (doc.kind === "heic" && doc.url) URL.revokeObjectURL(doc.url);
+        });
+        return;
+      }
     }
     clearDocuments();
     state.docs = docs;
@@ -227,7 +239,8 @@ async function createYuvDocument(file) {
     },
     frame: 0,
     fps: 25,
-    playing: false
+    playing: false,
+    zoom: null
   };
 }
 
@@ -235,16 +248,36 @@ async function createHeicDocument(file) {
   if (file.size > 256 * 1024 * 1024) {
     throw new Error(`${file.name} 超过 256 MB，无法在当前版本中解码。`);
   }
-  if (typeof window.heic2any !== "function") throw new Error("HEIC 解码器未加载");
-  const bytes = new Uint8Array(await window.desktop.readSlice(file.path, 0, file.size));
-  const result = await window.heic2any({
-    blob: new Blob([bytes], { type: "image/heic" }),
-    toType: "image/png"
-  });
-  const blob = Array.isArray(result) ? result[0] : result;
+  const decoded = await withTimeout(
+    window.desktop.decodeHeic(file.path),
+    45_000,
+    "HEIC 解码超过 45 秒，已停止等待。可使用“重启应用”恢复。"
+  );
+  const pngBytes = decoded.bytes?.data
+    ? new Uint8Array(decoded.bytes.data)
+    : new Uint8Array(decoded.bytes);
+  const blob = new Blob([pngBytes], { type: "image/png" });
   const url = URL.createObjectURL(blob);
   const size = await loadImageSize(url);
-  return { id: file.id, kind: "heic", file, url, ...size };
+  return {
+    id: file.id,
+    kind: "heic",
+    file,
+    url,
+    width: decoded.width || size.width,
+    height: decoded.height || size.height,
+    zoom: null
+  };
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  let timeout;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+    })
+  ]).finally(() => clearTimeout(timeout));
 }
 
 function loadImageSize(url) {
@@ -296,8 +329,83 @@ async function showActiveDocument() {
     $("#heic-image").src = doc.url;
     $("#heic-image").alt = doc.file.name;
     $("#heic-info").textContent = `${doc.width} × ${doc.height}`;
+    requestAnimationFrame(() => {
+      if (doc.zoom == null) fitImage("heic");
+      else applyImageZoom("heic");
+    });
   }
 }
+
+function viewerElements(viewer) {
+  return viewer === "yuv"
+    ? {
+        element: $("#yuv-canvas"),
+        stage: $("#yuv-stage"),
+        panel: $("#yuv-panel")
+      }
+    : {
+        element: $("#heic-image"),
+        stage: $("#heic-stage"),
+        panel: $("#heic-panel")
+      };
+}
+
+function viewerDocument(viewer) {
+  const doc = activeDocument();
+  if (!doc) return null;
+  if (viewer === "yuv" && doc.kind === "yuv") return doc;
+  if (viewer === "heic" && doc.kind === "heic") return doc;
+  return null;
+}
+
+function applyImageZoom(viewer) {
+  const doc = viewerDocument(viewer);
+  if (!doc || doc.zoom == null) return;
+  const { element } = viewerElements(viewer);
+  const width = viewer === "yuv" ? doc.config.width : doc.width;
+  element.style.width = `${Math.max(1, Math.round(width * doc.zoom))}px`;
+  element.style.maxWidth = "none";
+  element.style.height = "auto";
+  const value = $(`.zoom-toolbar[data-viewer="${viewer}"] .zoom-value`);
+  value.textContent = `${Math.round(doc.zoom * 100)}%`;
+}
+
+function setImageZoom(viewer, zoom) {
+  const doc = viewerDocument(viewer);
+  if (!doc) return;
+  doc.zoom = Math.max(0.1, Math.min(8, zoom));
+  applyImageZoom(viewer);
+}
+
+function fitImage(viewer) {
+  const doc = viewerDocument(viewer);
+  if (!doc) return;
+  const { stage } = viewerElements(viewer);
+  const width = viewer === "yuv" ? doc.config.width : doc.width;
+  const height = viewer === "yuv" ? doc.config.height : doc.height;
+  const availableWidth = Math.max(1, stage.clientWidth - 32);
+  const availableHeight = Math.max(1, stage.clientHeight - 32);
+  setImageZoom(viewer, Math.min(1, availableWidth / width, availableHeight / height));
+}
+
+$$(".zoom-toolbar button").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const toolbar = button.closest(".zoom-toolbar");
+    const viewer = toolbar.dataset.viewer;
+    const doc = viewerDocument(viewer);
+    if (!doc) return;
+    const action = button.dataset.action;
+    if (action === "in") setImageZoom(viewer, (doc.zoom || 1) * 1.25);
+    else if (action === "out") setImageZoom(viewer, (doc.zoom || 1) / 1.25);
+    else if (action === "reset") setImageZoom(viewer, 1);
+    else if (action === "fit") fitImage(viewer);
+    else if (action === "fullscreen") {
+      const { panel } = viewerElements(viewer);
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await panel.requestFullscreen();
+    }
+  });
+});
 
 function populateYuvFormats() {
   $("#yuv-format").innerHTML = M.FORMATS.map((format) => `<option>${format}</option>`).join("");
@@ -362,6 +470,8 @@ async function renderYuvFrame() {
     canvas.width = config.width;
     canvas.height = config.height;
     canvas.getContext("2d", { alpha: false }).putImageData(image, 0, 0);
+    if (doc.zoom == null) fitImage("yuv");
+    else applyImageZoom("yuv");
     $("#yuv-slider").value = doc.frame;
     $("#yuv-counter").textContent = `帧 ${doc.frame + 1} / ${config.frameCount}`;
     $("#yuv-time").textContent = M.formatTime(doc.frame / Math.max(1, doc.fps));
@@ -595,8 +705,8 @@ function selectStreamFrame(frame, seek) {
     toast("播放代理仍在生成；当前帧选择已记录。");
     return;
   }
+  video.pause();
   video.currentTime = target / state.stream.fps;
-  video.play().catch(() => {});
 }
 
 function updateCurrentFrameUi() {

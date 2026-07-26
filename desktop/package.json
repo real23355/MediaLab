@@ -1,9 +1,9 @@
 {
-  "name": "videoprobe-portable",
-  "version": "0.0.2",
+  "name": "medialab-portable",
+  "version": "0.0.3",
   "description": "Portable YUV, SYUV, HEIC, H.264 and H.265 diagnostic tool for Windows",
   "main": "src/main.cjs",
-  "author": "VideoProbe",
+  "author": "MediaLab",
   "license": "MIT",
   "private": true,
   "scripts": {
@@ -19,9 +19,9 @@
     "electron-builder": "26.15.3"
   },
   "build": {
-    "appId": "com.videoprobe.portable",
-    "productName": "VideoProbe",
-    "artifactName": "VideoProbe-Portable-${version}.${ext}",
+    "appId": "com.medialab.portable",
+    "productName": "MediaLab",
+    "artifactName": "MediaLab-Portable-${version}.${ext}",
     "asar": true,
     "files": [
       "src/**/*",
@@ -62,7 +62,7 @@
       "requestedExecutionLevel": "asInvoker"
     },
     "portable": {
-      "artifactName": "VideoProbe-Portable-${version}.exe"
+      "artifactName": "MediaLab-Portable-${version}.exe"
     }
   }
 }
