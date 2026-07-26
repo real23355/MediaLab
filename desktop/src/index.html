@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' file: data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; media-src 'self' file: blob: data:; img-src 'self' file: blob: data:; worker-src 'self' blob:"
+    />
+    <title>VideoProbe——视频码流与图像诊断工具</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <button id="brand-home" class="brand brand-button">
+        <span class="brand-mark"><i></i><i></i><i></i></span>
+        <span>VideoProbe——视频码流与图像诊断工具</span>
+        <b>V0.0.2</b>
+      </button>
+      <button id="new-file" class="ghost hidden">返回首页</button>
+    </header>
+
+    <main>
+      <section id="home" class="home">
+        <div class="hero">
+          <h1>看清每一个<br /><em>像素与编码帧</em></h1>
+          <p class="lead">
+            支持 YUV / SYUV、HEIC 与 H.264 / H.265 裸码流。图像可批量解析，
+            码流可播放并逐帧诊断。
+          </p>
+          <div class="feature-row">
+            <span>✓ 最多 10 个 YUV / HEIC</span>
+            <span>✓ 逐帧大小与极值</span>
+            <span>✓ 当前播放帧醒目标记</span>
+          </div>
+        </div>
+        <div id="drop-zone" class="drop-zone">
+          <div class="drop-icon"><span></span><b>+</b></div>
+          <h2>拖入媒体文件</h2>
+          <p>YUV / SYUV · HEIC · H.264 · H.265</p>
+          <button id="browse" class="primary">选择文件</button>
+          <small>YUV / HEIC 可多选（最多 10 个）；H.264 / H.265 每次仅 1 个</small>
+        </div>
+      </section>
+
+      <section id="type-screen" class="type-screen hidden">
+        <div>
+          <h2>确认每个文件的解析方式</h2>
+          <p class="muted">解析选项位于文件名右侧。YUV / HEIC 最多 10 个，码流一次 1 个。</p>
+        </div>
+        <div id="pending-list" class="pending-list"></div>
+        <button id="parse-files" class="primary parse-button">开始解析</button>
+      </section>
+
+      <section id="workspace" class="workspace hidden">
+        <div id="image-layout" class="image-layout hidden">
+          <aside id="file-tabs" class="file-tabs"></aside>
+          <div class="image-content">
+            <div id="file-summary" class="file-summary"></div>
+            <div id="notice" class="notice hidden"></div>
+
+            <div id="yuv-workspace" class="hidden">
+              <div class="workspace-grid">
+                <aside class="panel controls">
+                  <div class="panel-title"><b>01</b><div><h2>解析参数</h2><p>自动识别后可以手动校正</p></div></div>
+                  <label>像素格式<select id="yuv-format"></select></label>
+                  <div class="pair">
+                    <label>宽度<input id="yuv-width" type="number" min="1" /></label>
+                    <label>高度<input id="yuv-height" type="number" min="1" /></label>
+                  </div>
+                  <label>播放帧率<div class="suffix"><input id="yuv-fps" type="number" min="1" max="120" value="25" /><span>fps</span></div></label>
+                  <div id="yuv-detected" class="detected"></div>
+                  <details>
+                    <summary>自动识别候选</summary>
+                    <div id="yuv-candidates" class="candidates"></div>
+                  </details>
+                </aside>
+                <section class="panel viewer">
+                  <div class="viewer-head"><strong>YUV 画面</strong><span id="yuv-counter">帧 1 / 1</span></div>
+                  <div class="canvas-stage checker"><canvas id="yuv-canvas"></canvas></div>
+                  <div class="transport">
+                    <button id="yuv-prev">|‹</button>
+                    <button id="yuv-play" class="play">▶</button>
+                    <button id="yuv-next">›|</button>
+                    <span id="yuv-time">00:00.000</span>
+                    <input id="yuv-slider" type="range" min="0" max="0" value="0" />
+                  </div>
+                </section>
+              </div>
+            </div>
+
+            <div id="heic-workspace" class="hidden">
+              <section class="panel viewer heic-panel">
+                <div class="viewer-head"><strong>HEIC 图像</strong><span id="heic-info"></span></div>
+                <div class="canvas-stage checker heic-stage">
+                  <img id="heic-image" alt="HEIC 图像预览" />
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+
+        <div id="stream-workspace" class="hidden">
+          <div id="stream-summary" class="file-summary"></div>
+          <div id="stream-notice" class="notice hidden"></div>
+          <div id="stream-metrics" class="metrics"></div>
+          <div class="stream-grid">
+            <section class="panel viewer">
+              <div class="viewer-head">
+                <div><strong>解码画面</strong><small id="proxy-status">正在准备播放器…</small></div>
+                <span id="play-badge" class="badge waiting">处理中</span>
+              </div>
+              <div class="canvas-stage video-stage">
+                <video id="stream-video" controls></video>
+                <div id="current-frame-badge" class="current-frame-badge">
+                  <span>当前播放帧</span>
+                  <strong>#0</strong>
+                  <em>—</em>
+                </div>
+                <div id="video-placeholder" class="placeholder"><b>码流分析已完成</b><span>正在本地生成播放代理，不修改原文件</span></div>
+              </div>
+            </section>
+            <aside class="panel stream-info">
+              <div class="panel-title"><b>02</b><div><h2>码流信息</h2><p>FFprobe 原生解析结果</p></div></div>
+              <dl id="stream-info"></dl>
+              <div class="ippp-note"><b>IPPP 结构</b><span>仅统计 I / P 帧</span></div>
+            </aside>
+          </div>
+          <section class="panel frame-panel">
+            <div class="section-head">
+              <h2>逐帧编码大小</h2>
+              <div class="legend"><span><i class="i-color"></i>I 帧</span><span><i class="p-color"></i>P 帧</span></div>
+            </div>
+            <div class="chart-shell">
+              <div id="y-axis" class="y-axis"></div>
+              <div id="frame-chart" class="frame-chart"></div>
+            </div>
+            <div class="axis chart-axis"><span>帧 0</span><span id="last-frame">帧 0</span></div>
+            <div class="table-toolbar">
+              <strong>帧明细</strong><span id="page-range"></span>
+              <div><button id="page-prev">上一页</button><button id="page-next">下一页</button></div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>帧号</th><th>类型</th><th>编码大小</th><th>文件偏移</th><th>时间</th><th></th></tr></thead>
+                <tbody id="frame-rows"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast hidden"><b>提示</b><span></span><button>×</button></div>
+    <script src="./vendor/heic2any.js"></script>
+    <script src="./media.js"></script>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

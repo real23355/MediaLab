@@ -1,0 +1,68 @@
+{
+  "name": "videoprobe-portable",
+  "version": "0.0.2",
+  "description": "Portable YUV, SYUV, HEIC, H.264 and H.265 diagnostic tool for Windows",
+  "main": "src/main.cjs",
+  "author": "VideoProbe",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "postinstall": "node scripts/prepare-ffmpeg.cjs",
+    "prepare:ffmpeg": "node scripts/prepare-ffmpeg.cjs",
+    "start": "electron .",
+    "dist": "node scripts/prepare-ffmpeg.cjs && electron-builder --win portable --x64"
+  },
+  "devDependencies": {
+    "@ffmpeg-installer/win32-x64": "4.1.0",
+    "@ffprobe-installer/win32-x64": "5.1.0",
+    "electron": "43.2.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.videoprobe.portable",
+    "productName": "VideoProbe",
+    "artifactName": "VideoProbe-Portable-${version}.${ext}",
+    "asar": true,
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "ffmpeg/bin/ffmpeg.exe",
+        "to": "ffmpeg/ffmpeg.exe"
+      },
+      {
+        "from": "ffmpeg/bin/ffprobe.exe",
+        "to": "ffmpeg/ffprobe.exe"
+      },
+      {
+        "from": "ffmpeg/LICENSE.txt",
+        "to": "ffmpeg/LICENSE.txt"
+      },
+      {
+        "from": "THIRD_PARTY_NOTICES.txt",
+        "to": "THIRD_PARTY_NOTICES.txt"
+      }
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "portable": {
+      "artifactName": "VideoProbe-Portable-${version}.exe"
+    }
+  }
+}
