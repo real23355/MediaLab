@@ -17,7 +17,7 @@ async function render() {
   );
 }
 
-test("server-renders the finished VideoProbe product", async () => {
+test("server-renders the finished MediaLab product", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
@@ -25,10 +25,10 @@ test("server-renders the finished VideoProbe product", async () => {
   const html = await response.text();
   assert.match(
     html,
-    /<title>VideoProbe——视频码流与图像诊断工具(?: · VideoProbe)?<\/title>/i,
+    /<title>MediaLab——视频码流与图像分析工具(?: · MediaLab)?<\/title>/i,
   );
-  assert.match(html, /看清每一个/);
-  assert.match(html, /像素与编码帧/);
+  assert.match(html, /MediaLab/);
+  assert.match(html, /视频码流与图像分析工具/);
   assert.match(html, /YUV \/ SYUV/);
   assert.match(html, /HEIC/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|SkeletonPreview/i);
@@ -41,7 +41,7 @@ test("ships product metadata and no starter preview", async () => {
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /VideoProbe/);
+  assert.match(page, /MediaLab/);
   assert.match(layout, /heic2any/);
   assert.match(packageJson, /"name": "videoprobe-web"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);

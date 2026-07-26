@@ -1,4 +1,4 @@
-VideoProbe Web V0.0.2 — Third-party notices
+MediaLab Web V0.0.3 — Third-party notices
 
 heic2any 0.0.4
 Copyright (c) Alex Corvi

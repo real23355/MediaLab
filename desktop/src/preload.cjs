@@ -6,9 +6,11 @@ contextBridge.exposeInMainWorld("desktop", {
   pathForFile: (file) => webUtils.getPathForFile(file),
   readSlice: (filePath, start, length) =>
     ipcRenderer.invoke("read-slice", filePath, start, length),
+  decodeHeic: (filePath) => ipcRenderer.invoke("decode-heic", filePath),
   probeStream: (filePath, kind) =>
     ipcRenderer.invoke("probe-stream", filePath, kind),
   createProxy: (filePath, kind, fps) =>
     ipcRenderer.invoke("create-proxy", filePath, kind, fps),
-  appVersion: () => ipcRenderer.invoke("app-version")
+  appVersion: () => ipcRenderer.invoke("app-version"),
+  restartApp: () => ipcRenderer.invoke("restart-app")
 });

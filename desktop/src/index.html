@@ -7,23 +7,26 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self' file: data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; media-src 'self' file: blob: data:; img-src 'self' file: blob: data:; worker-src 'self' blob:"
     />
-    <title>VideoProbe——视频码流与图像诊断工具</title>
+    <title>MediaLab——视频码流与图像分析工具</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <header class="topbar">
       <button id="brand-home" class="brand brand-button">
         <span class="brand-mark"><i></i><i></i><i></i></span>
-        <span>VideoProbe——视频码流与图像诊断工具</span>
-        <b>V0.0.2</b>
+        <span>MediaLab——视频码流与图像分析工具</span>
+        <b>V0.0.3</b>
       </button>
-      <button id="new-file" class="ghost hidden">返回首页</button>
+      <div class="topbar-actions">
+        <button id="new-file" class="ghost hidden">返回首页</button>
+        <button id="restart-app" class="ghost hidden">重启应用</button>
+      </div>
     </header>
 
     <main>
       <section id="home" class="home">
         <div class="hero">
-          <h1>看清每一个<br /><em>像素与编码帧</em></h1>
+          <h1>MediaLab<br /><em>视频码流与图像分析工具</em></h1>
           <p class="lead">
             支持 YUV / SYUV、HEIC 与 H.264 / H.265 裸码流。图像可批量解析，
             码流可播放并逐帧诊断。
@@ -75,9 +78,19 @@
                     <div id="yuv-candidates" class="candidates"></div>
                   </details>
                 </aside>
-                <section class="panel viewer">
-                  <div class="viewer-head"><strong>YUV 画面</strong><span id="yuv-counter">帧 1 / 1</span></div>
-                  <div class="canvas-stage checker"><canvas id="yuv-canvas"></canvas></div>
+                <section id="yuv-panel" class="panel viewer image-viewer-panel">
+                  <div class="viewer-head">
+                    <strong>YUV 画面</strong>
+                    <span id="yuv-counter">帧 1 / 1</span>
+                    <div class="zoom-toolbar" data-viewer="yuv">
+                      <button data-action="out" title="缩小">−</button>
+                      <button data-action="reset" class="zoom-value" title="实际大小">100%</button>
+                      <button data-action="in" title="放大">＋</button>
+                      <button data-action="fit" title="适应窗口">适应</button>
+                      <button data-action="fullscreen" title="全屏查看">全屏</button>
+                    </div>
+                  </div>
+                  <div id="yuv-stage" class="canvas-stage checker zoom-stage"><canvas id="yuv-canvas"></canvas></div>
                   <div class="transport">
                     <button id="yuv-prev">|‹</button>
                     <button id="yuv-play" class="play">▶</button>
@@ -90,9 +103,19 @@
             </div>
 
             <div id="heic-workspace" class="hidden">
-              <section class="panel viewer heic-panel">
-                <div class="viewer-head"><strong>HEIC 图像</strong><span id="heic-info"></span></div>
-                <div class="canvas-stage checker heic-stage">
+              <section id="heic-panel" class="panel viewer heic-panel image-viewer-panel">
+                <div class="viewer-head">
+                  <strong>HEIC 图像</strong>
+                  <span id="heic-info"></span>
+                  <div class="zoom-toolbar" data-viewer="heic">
+                    <button data-action="out" title="缩小">−</button>
+                    <button data-action="reset" class="zoom-value" title="实际大小">100%</button>
+                    <button data-action="in" title="放大">＋</button>
+                    <button data-action="fit" title="适应窗口">适应</button>
+                    <button data-action="fullscreen" title="全屏查看">全屏</button>
+                  </div>
+                </div>
+                <div id="heic-stage" class="canvas-stage checker heic-stage zoom-stage">
                   <img id="heic-image" alt="HEIC 图像预览" />
                 </div>
               </section>
@@ -152,7 +175,6 @@
     </main>
 
     <div id="toast" class="toast hidden"><b>提示</b><span></span><button>×</button></div>
-    <script src="./vendor/heic2any.js"></script>
     <script src="./media.js"></script>
     <script src="./renderer.js"></script>
   </body>

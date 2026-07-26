@@ -1,26 +1,27 @@
-VideoProbe Portable V0.0.2
+MediaLab Portable V0.0.3
 Build date: 2026-07-26
 Target: Windows x64 portable
 Execution level: asInvoker（当前用户权限，无需管理员权限）
 
 Executable:
-release/VideoProbe-Portable-0.0.2.exe
+release/MediaLab-Portable-0.0.3.exe
 
 Size:
-124087516 bytes
+123828239 bytes
 
 SHA-256:
-C1250EF561FCE23D3B7F9B2AF8517897FF4B629B92FECD83661BF5D6CBD7AF75
+A41CD010C29CFC015FDE2D97EB5AE23A7AE2BA8DE2ADE375BCE85896BFBA3781
 
 Validated:
+- Web production build and rendered HTML tests passed
 - Electron source syntax checks passed
-- Packaged app.asar contains index.html, renderer.js, media.js and heic2any.js
+- Packaged app.asar contains index.html, renderer.js and heic.cjs
 - Packaged resources contain FFmpeg, FFprobe and third-party notices
-- Provided SYUV sample detected as 2560×1440 NV21, 151-byte header, 1 frame
-- IPPP H.264 and H.265 samples analyzed as I/P frames
-- Portable executable metadata reports VideoProbe 0.0.2.0
+- Provided HEIC sample extracted as a 2560×1440 HEVC frame and decoded to PNG
+- Frame selection pauses playback before seeking
+- Portable executable metadata reports MediaLab 0.0.3
 
 Notes:
 - The executable is intentionally not code-signed.
-- HEIC conversion is performed locally by the bundled heic2any decoder.
+- HEIC extraction and conversion are performed locally.
 - H.264/H.265 playback proxies are temporary and removed on normal exit.

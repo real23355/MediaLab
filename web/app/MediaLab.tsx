@@ -13,6 +13,7 @@ import {
   type YuvFormat,
   YUV_FORMATS,
 } from "../lib/media";
+import { decodeHeicWithWebCodecs } from "../lib/heic";
 import {
   type ChangeEvent,
   type DragEvent,
@@ -34,7 +35,7 @@ declare global {
   }
 }
 
-const VERSION = "V0.0.2";
+const VERSION = "V0.0.3";
 const PAGE_SIZE = 100;
 const IMAGE_LIMIT = 10;
 
@@ -107,6 +108,20 @@ function loadImageSize(url: string) {
     image.onerror = () => reject(new Error("转换后的 HEIC 图像无法读取"));
     image.src = url;
   });
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 export default function MediaLab() {
@@ -250,14 +265,35 @@ export default function MediaLab() {
             fps: 25,
           });
         } else {
-          if (!window.heic2any) throw new Error("HEIC 解码器尚未加载，请稍后重试。");
-          const converted = await window.heic2any({
-            blob: item.file,
-            toType: "image/png",
-          });
-          const blob = Array.isArray(converted) ? converted[0] : converted;
+          const bytes = new Uint8Array(await item.file.arrayBuffer());
+          let blob: Blob;
+          let decodedSize: { width: number; height: number } | undefined;
+          try {
+            const decoded = await withTimeout(
+              decodeHeicWithWebCodecs(bytes),
+              15_000,
+              "浏览器 H.265 解码超时",
+            );
+            blob = decoded.blob;
+            decodedSize = decoded;
+          } catch (nativeError) {
+            if (!window.heic2any) {
+              throw nativeError instanceof Error
+                ? nativeError
+                : new Error("当前浏览器无法解码此 HEIC 文件");
+            }
+            const converted = await withTimeout(
+              window.heic2any({
+                blob: item.file,
+                toType: "image/png",
+              }),
+              20_000,
+              "HEIC 解码超过 20 秒，已停止等待。建议使用 Windows 便携版解析该文件。",
+            );
+            blob = Array.isArray(converted) ? converted[0] : converted;
+          }
           const url = URL.createObjectURL(blob);
-          const size = await loadImageSize(url);
+          const size = decodedSize ?? await loadImageSize(url);
           docs.push({
             id: item.id,
             kind: "heic",
@@ -504,7 +540,7 @@ export default function MediaLab() {
       <header className="topbar">
         <button className="brand brand-button" type="button" onClick={returnHome}>
           <span className="brand-mark" aria-hidden="true"><i /><i /><i /></span>
-          <span>VideoProbe——视频码流与图像诊断工具</span>
+          <span>MediaLab——视频码流与图像分析工具</span>
           <b>{VERSION}</b>
         </button>
         {hasContent && (
@@ -517,7 +553,7 @@ export default function MediaLab() {
       {!hasContent && (
         <section className="landing">
           <div className="hero-copy">
-            <h1>看清每一个<br /><span>像素与编码帧</span></h1>
+            <h1>MediaLab<br /><span>视频码流与图像分析工具</span></h1>
             <p className="hero-description">
               支持 YUV / SYUV、HEIC 与 H.264 / H.265 裸码流；图像可批量解析，
               码流可播放并逐帧诊断。
@@ -602,16 +638,7 @@ export default function MediaLab() {
                 }
               />
             ) : (
-              <div className="panel heic-panel">
-                <div className="viewer-header">
-                  <span>HEIC 图像</span>
-                  <small>{activeDoc.width} × {activeDoc.height}</small>
-                </div>
-                <div className="canvas-stage checkerboard heic-stage">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={activeDoc.url} alt={activeDoc.file.name} />
-                </div>
-              </div>
+              <HeicViewer doc={activeDoc} />
             )}
           </div>
         </section>
@@ -797,6 +824,78 @@ function FileTabs({
   );
 }
 
+function ZoomToolbar({
+  zoom,
+  onZoom,
+  onFit,
+  onFullscreen,
+}: {
+  zoom: number;
+  onZoom: (zoom: number) => void;
+  onFit: () => void;
+  onFullscreen: () => void;
+}) {
+  return (
+    <div className="zoom-toolbar" aria-label="图片缩放控制">
+      <button type="button" title="缩小" onClick={() => onZoom(zoom / 1.25)}>−</button>
+      <button type="button" className="zoom-value" title="实际大小" onClick={() => onZoom(1)}>
+        {Math.round(zoom * 100)}%
+      </button>
+      <button type="button" title="放大" onClick={() => onZoom(zoom * 1.25)}>＋</button>
+      <button type="button" title="适应窗口" onClick={onFit}>适应</button>
+      <button type="button" title="全屏查看" onClick={onFullscreen}>全屏</button>
+    </div>
+  );
+}
+
+function HeicViewer({ doc }: { doc: HeicDocument }) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [zoom, setZoomState] = useState(1);
+  const setZoom = useCallback((value: number) => {
+    setZoomState(Math.max(0.1, Math.min(8, value)));
+  }, []);
+  const fit = useCallback(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    setZoom(Math.min(
+      1,
+      Math.max(1, stage.clientWidth - 32) / doc.width,
+      Math.max(1, stage.clientHeight - 32) / doc.height,
+    ));
+  }, [doc.height, doc.width, setZoom]);
+  useEffect(() => {
+    const frame = requestAnimationFrame(fit);
+    return () => cancelAnimationFrame(frame);
+  }, [doc.id, fit]);
+
+  return (
+    <div ref={panelRef} className="panel heic-panel image-viewer-panel">
+      <div className="viewer-header">
+        <span>HEIC 图像</span>
+        <small>{doc.width} × {doc.height}</small>
+        <ZoomToolbar
+          zoom={zoom}
+          onZoom={setZoom}
+          onFit={fit}
+          onFullscreen={() => {
+            if (document.fullscreenElement) void document.exitFullscreen();
+            else void panelRef.current?.requestFullscreen();
+          }}
+        />
+      </div>
+      <div ref={stageRef} className="canvas-stage checkerboard heic-stage zoom-stage">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={doc.url}
+          alt={doc.file.name}
+          style={{ width: `${Math.max(1, Math.round(doc.width * zoom))}px`, maxWidth: "none" }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function YuvViewer({
   doc,
   canvasRef,
@@ -813,6 +912,25 @@ function YuvViewer({
   onFps: (fps: number) => void;
 }) {
   const [playing, setPlaying] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [zoom, setZoomState] = useState(1);
+  const setZoom = useCallback((value: number) => {
+    setZoomState(Math.max(0.1, Math.min(8, value)));
+  }, []);
+  const fit = useCallback(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    setZoom(Math.min(
+      1,
+      Math.max(1, stage.clientWidth - 32) / doc.config.width,
+      Math.max(1, stage.clientHeight - 32) / doc.config.height,
+    ));
+  }, [doc.config.height, doc.config.width, setZoom]);
+  useEffect(() => {
+    const frame = requestAnimationFrame(fit);
+    return () => cancelAnimationFrame(frame);
+  }, [doc.id, fit]);
   useEffect(() => {
     if (!playing) return;
     const timer = setInterval(() => {
@@ -861,9 +979,31 @@ function YuvViewer({
           </details>
         )}
       </aside>
-      <div className="viewer panel">
-        <div className="viewer-header"><span>YUV 画面</span><small>帧 {doc.frame + 1} / {doc.config.frameCount}</small></div>
-        <div className="canvas-stage checkerboard"><canvas ref={canvasRef} aria-label="YUV 图像预览" /></div>
+      <div ref={panelRef} className="viewer panel image-viewer-panel">
+        <div className="viewer-header">
+          <span>YUV 画面</span>
+          <small>帧 {doc.frame + 1} / {doc.config.frameCount}</small>
+          <ZoomToolbar
+            zoom={zoom}
+            onZoom={setZoom}
+            onFit={fit}
+            onFullscreen={() => {
+              if (document.fullscreenElement) void document.exitFullscreen();
+              else void panelRef.current?.requestFullscreen();
+            }}
+          />
+        </div>
+        <div ref={stageRef} className="canvas-stage checkerboard zoom-stage">
+          <canvas
+            ref={canvasRef}
+            aria-label="YUV 图像预览"
+            style={{
+              width: `${Math.max(1, Math.round(doc.config.width * zoom))}px`,
+              height: `${Math.max(1, Math.round(doc.config.height * zoom))}px`,
+              maxWidth: "none",
+            }}
+          />
+        </div>
         <PlaybackControls
           playing={playing}
           frame={doc.frame}

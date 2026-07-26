@@ -5,8 +5,9 @@ const path = require("node:path");
 const os = require("node:os");
 const { spawn } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
+const { extractHeicFrame } = require("./heic.cjs");
 
-app.setName("VideoProbe");
+app.setName("MediaLab");
 app.commandLine.appendSwitch("disable-features", "OutOfBlinkCors");
 
 let mainWindow;
@@ -47,7 +48,7 @@ function createWindow() {
     minWidth: 1000,
     minHeight: 680,
     backgroundColor: "#f4f5f1",
-    title: "VideoProbe——视频码流与图像诊断工具",
+    title: "MediaLab——视频码流与图像分析工具",
     autoHideMenuBar: true,
     show: false,
     icon: path.join(__dirname, "..", "build", "icon.ico"),
@@ -74,7 +75,7 @@ ipcMain.handle("select-files", async () => {
     properties: ["openFile", "multiSelections"],
     filters: [
       {
-        name: "VideoProbe 支持的文件",
+        name: "MediaLab 支持的文件",
         extensions: ["yuv", "raw", "syuv", "heic", "heif", "264", "h264", "avc", "265", "h265", "hevc"]
       },
       { name: "所有文件", extensions: ["*"] }
@@ -105,6 +106,42 @@ ipcMain.handle("read-slice", async (_event, filePath, start, length) => {
     return buffer.subarray(0, bytesRead);
   } finally {
     await handle.close();
+  }
+});
+
+ipcMain.handle("decode-heic", async (_event, filePath) => {
+  const source = await fsp.readFile(filePath);
+  const extracted = extractHeicFrame(source);
+  const base = path.basename(filePath, path.extname(filePath)).replace(/[^\w.-]+/g, "_");
+  const input = path.join(
+    os.tmpdir(),
+    `MediaLab-heic-${base}-${Date.now()}-${Math.random().toString(16).slice(2)}.h265`
+  );
+  tempOutputs.add(input);
+  try {
+    await fsp.writeFile(input, extracted.annexB);
+    const { stdout } = await runTool(toolPath("ffmpeg"), [
+      "-hide_banner",
+      "-loglevel", "error",
+      "-f", "hevc",
+      "-i", input,
+      "-frames:v", "1",
+      "-f", "image2pipe",
+      "-c:v", "png",
+      "pipe:1"
+    ]);
+    return {
+      bytes: stdout,
+      width: extracted.width,
+      height: extracted.height
+    };
+  } finally {
+    tempOutputs.delete(input);
+    try {
+      await fsp.unlink(input);
+    } catch {
+      // Temporary cleanup failure is safe to ignore.
+    }
   }
 });
 
@@ -155,7 +192,7 @@ ipcMain.handle("create-proxy", async (_event, filePath, kind, fps) => {
   const base = path.basename(filePath, path.extname(filePath)).replace(/[^\w.-]+/g, "_");
   const output = path.join(
     os.tmpdir(),
-    `VideoProbe-${base}-${Date.now()}-${Math.random().toString(16).slice(2)}.mp4`
+    `MediaLab-${base}-${Date.now()}-${Math.random().toString(16).slice(2)}.mp4`
   );
   tempOutputs.add(output);
   const args = [
@@ -179,6 +216,10 @@ ipcMain.handle("create-proxy", async (_event, filePath, kind, fps) => {
 });
 
 ipcMain.handle("app-version", () => app.getVersion());
+ipcMain.handle("restart-app", () => {
+  app.relaunch();
+  app.exit(0);
+});
 
 app.whenReady().then(() => {
   createWindow();

@@ -1,9 +1,4 @@
-VideoProbe Portable V0.0.2 — Third-party notices
-
-heic2any 0.0.4
-Copyright (c) Alex Corvi
-License: MIT
-Source: https://github.com/alexcorvi/heic2any
+MediaLab Portable V0.0.3 — Third-party notices
 
 FFmpeg / FFprobe
 The executables are invoked as independent processes.

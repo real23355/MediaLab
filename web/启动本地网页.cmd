@@ -6,6 +6,6 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-echo 正在启动 VideoProbe V0.0.2 本地网页...
+echo 正在启动 MediaLab V0.0.3 本地网页...
 pnpm run dev
 pause
