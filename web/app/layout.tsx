@@ -13,7 +13,7 @@ export const metadata: Metadata = {
   },
   openGraph: {
     title: "MediaLab——视频码流与图像分析工具",
-    description: "YUV / SYUV / HEIC 图像解析、H.264/H.265 逐帧分析与播放。",
+    description: "YUV / SYUV / Bayer RAW / HEIC 图像解析、H.264/H.265 逐帧分析与播放。",
   },
   twitter: {
     card: "summary",

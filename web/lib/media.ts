@@ -1,4 +1,4 @@
-export type MediaKind = "yuv" | "heic" | "h264" | "h265";
+export type MediaKind = "yuv" | "raw" | "heic" | "h264" | "h265";
 
 export type YuvFormat =
   | "I420"
@@ -664,6 +664,7 @@ export function analyzeStream(
 
 export function detectKind(file: File): MediaKind {
   const name = file.name.toLowerCase();
+  if (/\.raw$/.test(name)) return "raw";
   if (/\.(heic|heif)$/.test(name)) return "heic";
   if (/\.(265|h265|hevc)$/.test(name)) return "h265";
   if (/\.(264|h264|avc)$/.test(name)) return "h264";

@@ -30,6 +30,7 @@ test("server-renders the finished MediaLab product", async () => {
   assert.match(html, /MediaLab/);
   assert.match(html, /视频码流与图像分析工具/);
   assert.match(html, /YUV \/ SYUV/);
+  assert.match(html, /Bayer RAW/);
   assert.match(html, /HEIC/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|SkeletonPreview/i);
 });
@@ -47,4 +48,5 @@ test("ships product metadata and no starter preview", async () => {
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   await assert.rejects(access(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)));
   await access(new URL("public/vendor/heic2any.js", root));
+  await access(new URL("lib/raw.ts", root));
 });

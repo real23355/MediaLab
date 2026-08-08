@@ -1,4 +1,5 @@
 const M = window.MediaTools;
+const R = window.RawTools;
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const IMAGE_LIMIT = 10;
@@ -16,7 +17,8 @@ const state = {
     analysis: null,
     fps: 25,
     page: 0,
-    currentFrame: 0
+    currentFrame: 0,
+    decoder: "检测中"
   }
 };
 
@@ -42,6 +44,7 @@ function escapeHtml(text) {
 
 function extensionKind(name) {
   const lower = name.toLowerCase();
+  if (/\.raw$/.test(lower)) return "raw";
   if (/\.(heic|heif)$/.test(lower)) return "heic";
   if (/\.(265|h265|hevc)$/.test(lower)) return "h265";
   if (/\.(264|h264|avc)$/.test(lower)) return "h264";
@@ -80,6 +83,7 @@ function returnHome() {
   show($("#home"), true);
   show($("#type-screen"), false);
   show($("#workspace"), false);
+  $("#workspace").classList.remove("image-mode", "stream-mode");
   show($("#new-file"), false);
   show($("#restart-app"), false);
   show($("#toast"), false);
@@ -94,7 +98,7 @@ async function receiveInfos(infos) {
   returnHome();
   const accepted = infos.slice(0, IMAGE_LIMIT);
   if (infos.length > IMAGE_LIMIT) {
-    toast(`YUV / HEIC 一次最多选择 ${IMAGE_LIMIT} 个文件，已保留前 ${IMAGE_LIMIT} 个。`);
+    toast(`YUV / RAW / HEIC 一次最多选择 ${IMAGE_LIMIT} 个文件，已保留前 ${IMAGE_LIMIT} 个。`);
   }
   state.pending = accepted.map((file, index) => ({
     ...file,
@@ -143,6 +147,7 @@ $("#drop-zone").addEventListener("drop", async (event) => {
 function renderPendingList() {
   const options = [
     ["yuv", "YUV 原始图像"],
+    ["raw", "Bayer RAW 图像"],
     ["heic", "HEIC 图片"],
     ["h264", "H.264 裸码流"],
     ["h265", "H.265 裸码流"]
@@ -186,12 +191,15 @@ async function parsePendingFiles() {
       show($("#workspace"), true);
       show($("#image-layout"), false);
       show($("#stream-workspace"), true);
+      $("#workspace").classList.remove("image-mode");
+      $("#workspace").classList.add("stream-mode");
       await openStream(streamFiles[0], streamFiles[0].kind);
       return;
     }
     const docs = [];
     for (const file of state.pending) {
       if (file.kind === "yuv") docs.push(await createYuvDocument(file));
+      else if (file.kind === "raw") docs.push(await createRawDocument(file));
       else if (file.kind === "heic") docs.push(await createHeicDocument(file));
       if (sessionToken !== state.sessionToken) {
         docs.forEach((doc) => {
@@ -208,6 +216,8 @@ async function parsePendingFiles() {
     show($("#workspace"), true);
     show($("#image-layout"), true);
     show($("#stream-workspace"), false);
+    $("#workspace").classList.remove("stream-mode");
+    $("#workspace").classList.add("image-mode");
     renderFileTabs();
     await showActiveDocument();
   } catch (error) {
@@ -240,7 +250,34 @@ async function createYuvDocument(file) {
     frame: 0,
     fps: 25,
     playing: false,
-    zoom: null
+    zoom: null,
+    fitMode: true
+  };
+}
+
+async function createRawDocument(file) {
+  if (!file.size) throw new Error(`${file.name} 是空文件。`);
+  if (file.size > 256 * 1024 * 1024) {
+    throw new Error(`${file.name} 超过 256 MB，当前版本拒绝一次性解码。`);
+  }
+  const bytes = new Uint8Array(await window.desktop.readSlice(file.path, 0, file.size));
+  if (bytes.byteLength !== file.size) throw new Error(`${file.name} 未能完整读取。`);
+  const config = R.detect(bytes.subarray(0, Math.min(bytes.byteLength, 2 * 1024 * 1024)), file.size, file.name);
+  const values = R.decode(bytes, config);
+  return {
+    id: file.id,
+    kind: "raw",
+    file,
+    bytes,
+    values,
+    config,
+    levels: R.levels(values, config.bitDepth),
+    mode: "rgb",
+    autoStretch: true,
+    blackLevel: 0,
+    gain: 1,
+    zoom: null,
+    fitMode: true
   };
 }
 
@@ -266,7 +303,8 @@ async function createHeicDocument(file) {
     url,
     width: decoded.width || size.width,
     height: decoded.height || size.height,
-    zoom: null
+    zoom: null,
+    fitMode: true
   };
 }
 
@@ -300,7 +338,7 @@ function renderFileTabs() {
       <button data-id="${escapeHtml(doc.id)}" class="${doc.id === state.activeDocId ? "active" : ""}">
         <b>${String(index + 1).padStart(2, "0")}</b>
         <span title="${escapeHtml(doc.file.name)}">${escapeHtml(doc.file.name)}</span>
-        <em>${doc.kind === "yuv" ? "YUV" : "HEIC"}</em>
+        <em>${doc.kind === "yuv" ? "YUV" : doc.kind === "raw" ? "RAW" : "HEIC"}</em>
       </button>
     `).join("")}
   `;
@@ -317,75 +355,128 @@ function renderFileTabs() {
 async function showActiveDocument() {
   const doc = activeDocument();
   if (!doc) return;
-  $("#file-summary").innerHTML = fileMarkup(doc.file, doc.kind === "yuv" ? "YUV / SYUV" : "HEIC");
+  $("#file-summary").innerHTML = fileMarkup(
+    doc.file,
+    doc.kind === "yuv" ? "YUV / SYUV" : doc.kind === "raw" ? "Bayer RAW" : "HEIC"
+  );
   show($("#yuv-workspace"), doc.kind === "yuv");
+  show($("#raw-workspace"), doc.kind === "raw");
   show($("#heic-workspace"), doc.kind === "heic");
   if (doc.kind === "yuv") {
     populateYuvFormats();
     syncYuvControls();
     renderCandidateList();
     await renderYuvFrame();
+  } else if (doc.kind === "raw") {
+    syncRawControls();
+    await renderRawFrame();
   } else {
     $("#heic-image").src = doc.url;
     $("#heic-image").alt = doc.file.name;
     $("#heic-info").textContent = `${doc.width} × ${doc.height}`;
     requestAnimationFrame(() => {
-      if (doc.zoom == null) fitImage("heic");
+      if (doc.zoom == null || doc.fitMode) fitImage("heic");
       else applyImageZoom("heic");
     });
   }
 }
 
 function viewerElements(viewer) {
-  return viewer === "yuv"
-    ? {
-        element: $("#yuv-canvas"),
-        stage: $("#yuv-stage"),
-        panel: $("#yuv-panel")
-      }
-    : {
-        element: $("#heic-image"),
-        stage: $("#heic-stage"),
-        panel: $("#heic-panel")
-      };
+  const ids = {
+    yuv: ["#yuv-canvas", "#yuv-stage", "#yuv-panel"],
+    raw: ["#raw-canvas", "#raw-stage", "#raw-panel"],
+    heic: ["#heic-image", "#heic-stage", "#heic-panel"]
+  }[viewer];
+  const stage = $(ids[1]);
+  return { element: $(ids[0]), stage, surface: stage.querySelector(".image-surface"), panel: $(ids[2]) };
 }
 
 function viewerDocument(viewer) {
   const doc = activeDocument();
   if (!doc) return null;
   if (viewer === "yuv" && doc.kind === "yuv") return doc;
+  if (viewer === "raw" && doc.kind === "raw") return doc;
   if (viewer === "heic" && doc.kind === "heic") return doc;
   return null;
+}
+
+function viewerSize(viewer, doc) {
+  return viewer === "heic"
+    ? { width: doc.width, height: doc.height }
+    : { width: doc.config.width, height: doc.config.height };
+}
+
+function updateViewerStatus(viewer) {
+  const doc = viewerDocument(viewer);
+  if (!doc) return;
+  const zoom = Math.round((doc.zoom || 1) * 100);
+  if (viewer === "yuv") {
+    const pixel = doc.pixel || { x: 0, y: 0 };
+    $("#yuv-status").textContent = `${doc.config.width}×${doc.config.height} | ${doc.config.format} | Zoom ${zoom}% | X:${pixel.x} Y:${pixel.y}`;
+  } else if (viewer === "raw") {
+    const pixel = doc.pixel || { x: 0, y: 0 };
+    const value = doc.values[pixel.y * doc.config.width + pixel.x] || 0;
+    const channel = R.bayerChannel(doc.config.bayer, pixel.x, pixel.y);
+    $("#raw-status").textContent = `${doc.config.width}×${doc.config.height} | ${doc.config.bayer} | RAW${doc.config.bitDepth} | Zoom ${zoom}% | X:${pixel.x} Y:${pixel.y} RAW:${value} ${channel}`;
+  } else {
+    $("#heic-status").textContent = `${doc.width}×${doc.height} | HEIC | Zoom ${zoom}%`;
+  }
 }
 
 function applyImageZoom(viewer) {
   const doc = viewerDocument(viewer);
   if (!doc || doc.zoom == null) return;
-  const { element } = viewerElements(viewer);
-  const width = viewer === "yuv" ? doc.config.width : doc.width;
-  element.style.width = `${Math.max(1, Math.round(width * doc.zoom))}px`;
-  element.style.maxWidth = "none";
-  element.style.height = "auto";
+  const { surface } = viewerElements(viewer);
+  const { width, height } = viewerSize(viewer, doc);
+  surface.style.width = `${Math.max(1, Math.round(width * doc.zoom))}px`;
+  surface.style.height = `${Math.max(1, Math.round(height * doc.zoom))}px`;
   const value = $(`.zoom-toolbar[data-viewer="${viewer}"] .zoom-value`);
-  value.textContent = `${Math.round(doc.zoom * 100)}%`;
+  const exact = [...value.options].find((option) => Number(option.value) === doc.zoom);
+  value.querySelector("option[data-custom]")?.remove();
+  if (exact) value.value = exact.value;
+  else {
+    const option = document.createElement("option");
+    option.dataset.custom = "true";
+    option.value = String(doc.zoom);
+    option.textContent = `${Math.round(doc.zoom * 100)}%`;
+    value.append(option);
+    value.value = option.value;
+  }
+  updateViewerStatus(viewer);
 }
 
-function setImageZoom(viewer, zoom) {
+function setImageZoom(viewer, zoom, anchor) {
   const doc = viewerDocument(viewer);
   if (!doc) return;
-  doc.zoom = Math.max(0.1, Math.min(8, zoom));
+  const { stage, surface } = viewerElements(viewer);
+  const previous = doc.zoom || 1;
+  doc.fitMode = false;
+  const bounds = stage.getBoundingClientRect();
+  const viewportX = (anchor?.x ?? bounds.left + stage.clientWidth / 2) - bounds.left;
+  const viewportY = (anchor?.y ?? bounds.top + stage.clientHeight / 2) - bounds.top;
+  const imageX = (stage.scrollLeft + viewportX - surface.offsetLeft) / previous;
+  const imageY = (stage.scrollTop + viewportY - surface.offsetTop) / previous;
+  doc.zoom = Math.max(0.1, Math.min(16, zoom));
   applyImageZoom(viewer);
+  requestAnimationFrame(() => {
+    stage.scrollLeft = surface.offsetLeft + imageX * doc.zoom - viewportX;
+    stage.scrollTop = surface.offsetTop + imageY * doc.zoom - viewportY;
+  });
 }
 
 function fitImage(viewer) {
   const doc = viewerDocument(viewer);
   if (!doc) return;
   const { stage } = viewerElements(viewer);
-  const width = viewer === "yuv" ? doc.config.width : doc.width;
-  const height = viewer === "yuv" ? doc.config.height : doc.height;
-  const availableWidth = Math.max(1, stage.clientWidth - 32);
-  const availableHeight = Math.max(1, stage.clientHeight - 32);
-  setImageZoom(viewer, Math.min(1, availableWidth / width, availableHeight / height));
+  const { width, height } = viewerSize(viewer, doc);
+  const style = getComputedStyle(stage);
+  const availableWidth = Math.max(1, stage.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight));
+  const availableHeight = Math.max(1, stage.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom));
+  doc.fitMode = true;
+  doc.zoom = Math.max(0.1, Math.min(16, availableWidth / width, availableHeight / height));
+  applyImageZoom(viewer);
+  stage.scrollLeft = 0;
+  stage.scrollTop = 0;
 }
 
 $$(".zoom-toolbar button").forEach((button) => {
@@ -405,6 +496,62 @@ $$(".zoom-toolbar button").forEach((button) => {
       else await panel.requestFullscreen();
     }
   });
+});
+
+$$('.zoom-toolbar select[data-action="preset"]').forEach((select) => {
+  select.addEventListener("change", () => setImageZoom(select.closest(".zoom-toolbar").dataset.viewer, Number(select.value)));
+});
+
+["yuv", "raw", "heic"].forEach((viewer) => {
+  const { stage, surface } = viewerElements(viewer);
+  let drag = null;
+  stage.addEventListener("wheel", (event) => {
+    if (!viewerDocument(viewer)) return;
+    event.preventDefault();
+    const doc = viewerDocument(viewer);
+    setImageZoom(viewer, (doc.zoom || 1) * (event.deltaY < 0 ? 1.12 : 1 / 1.12), { x: event.clientX, y: event.clientY });
+  }, { passive: false });
+  stage.addEventListener("pointerdown", (event) => {
+    if (!viewerDocument(viewer) || (event.button !== 0 && event.button !== 1)) return;
+    drag = { x: event.clientX, y: event.clientY, left: stage.scrollLeft, top: stage.scrollTop };
+    stage.setPointerCapture(event.pointerId);
+    stage.classList.add("panning");
+    event.preventDefault();
+  });
+  stage.addEventListener("pointermove", (event) => {
+    if (drag) {
+      stage.scrollLeft = drag.left - (event.clientX - drag.x);
+      stage.scrollTop = drag.top - (event.clientY - drag.y);
+      return;
+    }
+    const doc = viewerDocument(viewer);
+    if (!doc || viewer === "heic") return;
+    const bounds = surface.getBoundingClientRect();
+    const size = viewerSize(viewer, doc);
+    const x = Math.floor(((event.clientX - bounds.left) / Math.max(1, bounds.width)) * size.width);
+    const y = Math.floor(((event.clientY - bounds.top) / Math.max(1, bounds.height)) * size.height);
+    if (x >= 0 && y >= 0 && x < size.width && y < size.height) {
+      doc.pixel = { x, y };
+      updateViewerStatus(viewer);
+    }
+  });
+  const stop = () => {
+    drag = null;
+    stage.classList.remove("panning");
+  };
+  stage.addEventListener("pointerup", stop);
+  stage.addEventListener("pointercancel", stop);
+  let resizeFrame = 0;
+  const observer = new ResizeObserver(() => {
+    const doc = viewerDocument(viewer);
+    if (!doc || !doc.fitMode) return;
+    cancelAnimationFrame(resizeFrame);
+    resizeFrame = requestAnimationFrame(() => {
+      const current = viewerDocument(viewer);
+      if (current?.fitMode) fitImage(viewer);
+    });
+  });
+  observer.observe(stage);
 });
 
 function populateYuvFormats() {
@@ -470,7 +617,7 @@ async function renderYuvFrame() {
     canvas.width = config.width;
     canvas.height = config.height;
     canvas.getContext("2d", { alpha: false }).putImageData(image, 0, 0);
-    if (doc.zoom == null) fitImage("yuv");
+    if (doc.zoom == null || doc.fitMode) fitImage("yuv");
     else applyImageZoom("yuv");
     $("#yuv-slider").value = doc.frame;
     $("#yuv-counter").textContent = `帧 ${doc.frame + 1} / ${config.frameCount}`;
@@ -564,6 +711,112 @@ function stopYuv() {
   state.yuvTimer = null;
 }
 
+function populateRawOptions() {
+  $("#raw-bayer").innerHTML = R.BAYER_PATTERNS.map((pattern) => `<option>${pattern}</option>`).join("");
+  $("#raw-packing").innerHTML = R.RAW_PACKINGS.map((packing) => `<option value="${packing.value}">${packing.label}</option>`).join("");
+}
+
+function syncRawControls() {
+  const doc = activeDocument();
+  if (!doc || doc.kind !== "raw") return;
+  populateRawOptions();
+  $("#raw-width").value = doc.config.width;
+  $("#raw-height").value = doc.config.height;
+  $("#raw-bit-depth").value = doc.config.bitDepth;
+  $("#raw-bayer").value = doc.config.bayer;
+  $("#raw-packing").value = doc.config.packing;
+  $("#raw-mode").value = doc.mode;
+  $("#raw-auto-stretch").checked = doc.autoStretch;
+  $("#raw-black").value = doc.blackLevel;
+  $("#raw-gain").value = doc.gain;
+  const packing = R.RAW_PACKINGS.find((item) => item.value === doc.config.packing)?.label || doc.config.packing;
+  $("#raw-info").textContent = `${doc.config.width} × ${doc.config.height} · ${doc.mode === "rgb" ? "Demosaic RGB" : "Grayscale"}`;
+  $("#raw-detected").innerHTML = `
+    <span>检测结果</span>
+    <strong>${doc.config.width} × ${doc.config.height} · ${doc.config.bayer} · ${doc.config.bitDepth} bit</strong>
+    <small>${packing} · ${M.formatBytes(doc.config.frameBytes)}</small>
+    <small>数据范围 ${doc.levels.min}–${doc.levels.max} · 拉伸 ${doc.levels.low}–${doc.levels.high}</small>
+    <small>${escapeHtml(doc.config.reason)}</small>
+  `;
+  updateViewerStatus("raw");
+}
+
+async function renderRawFrame() {
+  const token = ++state.renderToken;
+  const doc = activeDocument();
+  if (!doc || doc.kind !== "raw") return;
+  try {
+    const image = R.render(
+      doc.values, doc.config, doc.mode, doc.levels,
+      doc.autoStretch, doc.blackLevel, doc.gain
+    );
+    if (token !== state.renderToken) return;
+    const canvas = $("#raw-canvas");
+    canvas.width = doc.config.width;
+    canvas.height = doc.config.height;
+    canvas.getContext("2d", { alpha: false }).putImageData(image, 0, 0);
+    syncRawControls();
+    if (doc.zoom == null || doc.fitMode) fitImage("raw");
+    else applyImageZoom("raw");
+  } catch (error) {
+    toast(`RAW 预览失败：${error.message}`);
+  }
+}
+
+async function changeRawConfig() {
+  const doc = activeDocument();
+  if (!doc || doc.kind !== "raw") return;
+  const next = {
+    ...doc.config,
+    width: Math.max(1, Number($("#raw-width").value) || 1),
+    height: Math.max(1, Number($("#raw-height").value) || 1),
+    bitDepth: Math.max(1, Number($("#raw-bit-depth").value) || 10),
+    bayer: $("#raw-bayer").value,
+    packing: $("#raw-packing").value,
+    reason: "手动调整"
+  };
+  next.frameBytes = R.frameBytes(next.width, next.height, next.bitDepth, next.packing);
+  try {
+    const values = R.decode(doc.bytes, next);
+    doc.config = next;
+    doc.values = values;
+    doc.levels = R.levels(values, next.bitDepth);
+    doc.pixel = { x: 0, y: 0 };
+    await renderRawFrame();
+  } catch (error) {
+    toast(error.message);
+    syncRawControls();
+  }
+}
+
+["#raw-width", "#raw-height", "#raw-bit-depth", "#raw-bayer", "#raw-packing"].forEach((selector) => {
+  $(selector).addEventListener("change", changeRawConfig);
+});
+$("#raw-mode").addEventListener("change", async (event) => {
+  const doc = activeDocument();
+  if (!doc || doc.kind !== "raw") return;
+  doc.mode = event.target.value;
+  await renderRawFrame();
+});
+$("#raw-auto-stretch").addEventListener("change", async (event) => {
+  const doc = activeDocument();
+  if (!doc || doc.kind !== "raw") return;
+  doc.autoStretch = event.target.checked;
+  await renderRawFrame();
+});
+$("#raw-black").addEventListener("change", async (event) => {
+  const doc = activeDocument();
+  if (!doc || doc.kind !== "raw") return;
+  doc.blackLevel = Math.max(0, Number(event.target.value) || 0);
+  await renderRawFrame();
+});
+$("#raw-gain").addEventListener("change", async (event) => {
+  const doc = activeDocument();
+  if (!doc || doc.kind !== "raw") return;
+  doc.gain = Math.max(0.1, Number(event.target.value) || 1);
+  await renderRawFrame();
+});
+
 function notice(message, type = "working", stream = false) {
   const element = stream ? $("#stream-notice") : $("#notice");
   element.textContent = message;
@@ -580,6 +833,7 @@ async function openStream(file, kind) {
   state.stream.analysis = analysis;
   state.stream.page = 0;
   state.stream.currentFrame = 0;
+  state.stream.decoder = "检测中";
   state.stream.fps = parseRate(analysis.rate) || 25;
   renderStreamSummary();
   renderFrameChart();
@@ -617,6 +871,7 @@ function renderStreamSummary() {
     ["Profile", analysis.profile],
     ["Level", analysis.level ?? "—"],
     ["像素格式", analysis.pixelFormat],
+    ["实际解码器", state.stream.decoder],
     ["帧率", `${state.stream.fps.toFixed(3)} fps`],
     ["平均帧大小", M.formatBytes(average)],
     ["最大帧大小", M.formatBytes(max)],
@@ -744,13 +999,17 @@ async function prepareProxy(file, kind) {
   badge.className = "badge waiting";
   show(placeholder, true);
   try {
-    const url = await window.desktop.createProxy(file.path, kind, state.stream.fps);
+    const result = await window.desktop.createProxy(file.path, kind, state.stream.fps);
+    const url = typeof result === "string" ? result : result.url;
+    state.stream.decoder = typeof result === "string" ? "Software Decode" : result.decoder;
     const video = $("#stream-video");
     video.src = url;
     video.load();
-    status.textContent = "内置 FFmpeg 解码 · 原文件未修改";
+    status.textContent = `${kind.toUpperCase()} | ${state.stream.analysis.width || "—"}×${state.stream.analysis.height || "—"} | ${state.stream.decoder}`;
     badge.textContent = "可播放";
-    badge.className = "badge ready";
+    badge.textContent = result.hardware ? "GPU 硬解" : "软件解码";
+    badge.className = `badge ready ${result.hardware ? "hardware" : "software"}`;
+    renderStreamSummary();
     show(placeholder, false);
   } catch (error) {
     status.textContent = "播放代理生成失败";

@@ -15,7 +15,7 @@
       <button id="brand-home" class="brand brand-button">
         <span class="brand-mark"><i></i><i></i><i></i></span>
         <span>MediaLab——视频码流与图像分析工具</span>
-        <b>V0.0.3</b>
+        <b>V0.0.5</b>
       </button>
       <div class="topbar-actions">
         <button id="new-file" class="ghost hidden">返回首页</button>
@@ -28,11 +28,11 @@
         <div class="hero">
           <h1>MediaLab<br /><em>视频码流与图像分析工具</em></h1>
           <p class="lead">
-            支持 YUV / SYUV、HEIC 与 H.264 / H.265 裸码流。图像可批量解析，
+            支持 YUV / SYUV、Bayer RAW、HEIC 与 H.264 / H.265 裸码流。图像可批量解析，
             码流可播放并逐帧诊断。
           </p>
           <div class="feature-row">
-            <span>✓ 最多 10 个 YUV / HEIC</span>
+            <span>✓ YUV / RAW 专业缩放与像素检查</span>
             <span>✓ 逐帧大小与极值</span>
             <span>✓ 当前播放帧醒目标记</span>
           </div>
@@ -40,16 +40,16 @@
         <div id="drop-zone" class="drop-zone">
           <div class="drop-icon"><span></span><b>+</b></div>
           <h2>拖入媒体文件</h2>
-          <p>YUV / SYUV · HEIC · H.264 · H.265</p>
+          <p>YUV / SYUV · Bayer RAW · HEIC · H.264 · H.265</p>
           <button id="browse" class="primary">选择文件</button>
-          <small>YUV / HEIC 可多选（最多 10 个）；H.264 / H.265 每次仅 1 个</small>
+          <small>YUV / RAW / HEIC 可多选（最多 10 个）；H.264 / H.265 每次仅 1 个</small>
         </div>
       </section>
 
       <section id="type-screen" class="type-screen hidden">
         <div>
           <h2>确认每个文件的解析方式</h2>
-          <p class="muted">解析选项位于文件名右侧。YUV / HEIC 最多 10 个，码流一次 1 个。</p>
+          <p class="muted">解析选项位于文件名右侧。YUV / RAW / HEIC 最多 10 个，码流一次 1 个。</p>
         </div>
         <div id="pending-list" class="pending-list"></div>
         <button id="parse-files" class="primary parse-button">开始解析</button>
@@ -84,13 +84,19 @@
                     <span id="yuv-counter">帧 1 / 1</span>
                     <div class="zoom-toolbar" data-viewer="yuv">
                       <button data-action="out" title="缩小">−</button>
-                      <button data-action="reset" class="zoom-value" title="实际大小">100%</button>
+                      <select class="zoom-value" data-action="preset" title="缩放比例">
+                        <option value="0.25">25%</option><option value="0.5">50%</option><option value="0.75">75%</option>
+                        <option value="1">100%</option><option value="1.25">125%</option><option value="1.5">150%</option>
+                        <option value="2">200%</option><option value="3">300%</option><option value="4">400%</option><option value="8">800%</option>
+                      </select>
                       <button data-action="in" title="放大">＋</button>
-                      <button data-action="fit" title="适应窗口">适应</button>
+                      <button data-action="fit" title="适应窗口">Fit</button>
+                      <button data-action="reset" title="实际大小">100%</button>
                       <button data-action="fullscreen" title="全屏查看">全屏</button>
                     </div>
                   </div>
-                  <div id="yuv-stage" class="canvas-stage checker zoom-stage"><canvas id="yuv-canvas"></canvas></div>
+                  <div id="yuv-stage" class="canvas-stage checker zoom-stage"><div class="image-surface"><canvas id="yuv-canvas"></canvas></div></div>
+                  <div id="yuv-status" class="viewer-status">YUV 像素坐标</div>
                   <div class="transport">
                     <button id="yuv-prev">|‹</button>
                     <button id="yuv-play" class="play">▶</button>
@@ -102,6 +108,50 @@
               </div>
             </div>
 
+            <div id="raw-workspace" class="hidden">
+              <div class="workspace-grid">
+                <aside class="panel controls raw-controls">
+                  <div class="panel-title"><b>RAW</b><div><h2>RAW 参数</h2><p>自动识别后可以手动校正</p></div></div>
+                  <div class="pair">
+                    <label>宽度<input id="raw-width" type="number" min="1" /></label>
+                    <label>高度<input id="raw-height" type="number" min="1" /></label>
+                  </div>
+                  <div class="pair">
+                    <label>Bit Depth<select id="raw-bit-depth"><option>8</option><option selected>10</option><option>12</option><option>14</option><option>16</option></select></label>
+                    <label>Bayer<select id="raw-bayer"></select></label>
+                  </div>
+                  <label>Packing Format<select id="raw-packing"></select></label>
+                  <label>显示模式<select id="raw-mode"><option value="rgb">Demosaic RGB</option><option value="gray">Grayscale RAW</option></select></label>
+                  <label class="check-field"><input id="raw-auto-stretch" type="checkbox" checked />Auto Stretch（0.1%–99.9%）</label>
+                  <div class="pair">
+                    <label>Black Level<input id="raw-black" type="number" min="0" value="0" /></label>
+                    <label>Preview Gain<input id="raw-gain" type="number" min="0.1" max="16" step="0.1" value="1" /></label>
+                  </div>
+                  <div id="raw-detected" class="detected"></div>
+                </aside>
+                <section id="raw-panel" class="panel viewer image-viewer-panel">
+                  <div class="viewer-head">
+                    <strong>Bayer RAW 画面</strong>
+                    <span id="raw-info"></span>
+                    <div class="zoom-toolbar" data-viewer="raw">
+                      <button data-action="out" title="缩小">−</button>
+                      <select class="zoom-value" data-action="preset" title="缩放比例">
+                        <option value="0.25">25%</option><option value="0.5">50%</option><option value="0.75">75%</option>
+                        <option value="1">100%</option><option value="1.25">125%</option><option value="1.5">150%</option>
+                        <option value="2">200%</option><option value="3">300%</option><option value="4">400%</option><option value="8">800%</option>
+                      </select>
+                      <button data-action="in" title="放大">＋</button>
+                      <button data-action="fit" title="适应窗口">Fit</button>
+                      <button data-action="reset" title="实际大小">100%</button>
+                      <button data-action="fullscreen" title="全屏查看">全屏</button>
+                    </div>
+                  </div>
+                  <div id="raw-stage" class="canvas-stage checker zoom-stage"><div class="image-surface"><canvas id="raw-canvas"></canvas></div></div>
+                  <div id="raw-status" class="viewer-status">RAW 像素信息</div>
+                </section>
+              </div>
+            </div>
+
             <div id="heic-workspace" class="hidden">
               <section id="heic-panel" class="panel viewer heic-panel image-viewer-panel">
                 <div class="viewer-head">
@@ -109,15 +159,21 @@
                   <span id="heic-info"></span>
                   <div class="zoom-toolbar" data-viewer="heic">
                     <button data-action="out" title="缩小">−</button>
-                    <button data-action="reset" class="zoom-value" title="实际大小">100%</button>
+                    <select class="zoom-value" data-action="preset" title="缩放比例">
+                      <option value="0.25">25%</option><option value="0.5">50%</option><option value="0.75">75%</option>
+                      <option value="1">100%</option><option value="1.25">125%</option><option value="1.5">150%</option>
+                      <option value="2">200%</option><option value="3">300%</option><option value="4">400%</option><option value="8">800%</option>
+                    </select>
                     <button data-action="in" title="放大">＋</button>
-                    <button data-action="fit" title="适应窗口">适应</button>
+                    <button data-action="fit" title="适应窗口">Fit</button>
+                    <button data-action="reset" title="实际大小">100%</button>
                     <button data-action="fullscreen" title="全屏查看">全屏</button>
                   </div>
                 </div>
                 <div id="heic-stage" class="canvas-stage checker heic-stage zoom-stage">
-                  <img id="heic-image" alt="HEIC 图像预览" />
+                  <div class="image-surface"><img id="heic-image" alt="HEIC 图像预览" draggable="false" /></div>
                 </div>
+                <div id="heic-status" class="viewer-status">HEIC 图像</div>
               </section>
             </div>
           </div>
@@ -176,6 +232,7 @@
 
     <div id="toast" class="toast hidden"><b>提示</b><span></span><button>×</button></div>
     <script src="./media.js"></script>
+    <script src="./raw.js"></script>
     <script src="./renderer.js"></script>
   </body>
 </html>

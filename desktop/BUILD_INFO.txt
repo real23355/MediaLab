@@ -1,27 +1,32 @@
-MediaLab Portable V0.0.3
-Build date: 2026-07-26
+MediaLab Portable V0.0.5
+Build date: 2026-08-08
 Target: Windows x64 portable
 Execution level: asInvoker（当前用户权限，无需管理员权限）
 
-Executable:
-release/MediaLab-Portable-0.0.3.exe
+Portable executable:
+release/MediaLab-Portable-0.0.5.exe
 
 Size:
-123828239 bytes
+123829778 bytes
 
 SHA-256:
-A41CD010C29CFC015FDE2D97EB5AE23A7AE2BA8DE2ADE375BCE85896BFBA3781
+32D5F69A9261F3C2F074008192F1C31C400A6DBE5C522B420038CFAB3F6826C8
 
 Validated:
 - Web production build and rendered HTML tests passed
+- Browser regression passed for RAW, YUV/SYUV and HEIC
+- RAW10 packed/unpacked and Bayer unit tests passed
+- Real 3840×2160 RGGB RAW10 Unpacked16 LE sample decoded and rendered
+- Zoom at cursor, 1:1, Fit, pan and pixel inspection were verified
+- Responsive Viewer measured at 1280x720, 1920x1080, 2560x1440 and 3840x2160
+- H.264/H.265 proxy decode prefers D3D11VA and falls back to software decode
 - Electron source syntax checks passed
-- Packaged app.asar contains index.html, renderer.js and heic.cjs
+- Packaged app.asar contains index.html, renderer.js, media.js, raw.js and heic.cjs
 - Packaged resources contain FFmpeg, FFprobe and third-party notices
-- Provided HEIC sample extracted as a 2560×1440 HEVC frame and decoded to PNG
-- Frame selection pauses playback before seeking
-- Portable executable metadata reports MediaLab 0.0.3
+- Packaged FFprobe/FFmpeg validated H.265 and H.264 1920×1080 streams
+- Portable executable metadata reports MediaLab 0.0.5
 
 Notes:
-- The executable is intentionally not code-signed.
-- HEIC extraction and conversion are performed locally.
+- The executable is intentionally not code-signed with a publisher certificate.
+- RAW, YUV and HEIC processing is performed locally.
 - H.264/H.265 playback proxies are temporary and removed on normal exit.

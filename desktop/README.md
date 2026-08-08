@@ -1,17 +1,19 @@
-# MediaLab Portable V0.0.3
+# MediaLab Portable V0.0.5
 
 Windows 64 位免安装的“视频码流与图像分析工具”。
 
 ## 使用方法
 
-直接双击 `MediaLab-Portable-0.0.3.exe`。程序使用当前用户权限运行，不安装服务、不修改注册表、不需要管理员权限。
+直接双击 `release/MediaLab-Windows/MediaLab.exe`。程序使用当前用户权限运行，不安装服务、不修改注册表、不需要管理员权限。
 
 ## 功能
 
 - YUV / RAW / SYUV 自动识别、手动校正、预览与逐帧播放
 - 自动解析样例 SYUV 文件头、2560×1440 分辨率、151 B 数据偏移与 NV21 格式
 - HEIC / HEIF 本地解码、缩放与全屏预览
-- YUV / HEIC 支持一次选择最多 10 个文件，并以左侧标签页切换
+- YUV / RAW / HEIC 支持一次选择最多 10 个文件，并以左侧标签页切换
+- Bayer RAW10 Packed/Unpacked16、四种 Bayer、灰度/RGB、Auto Stretch、Black/Gain 与像素检查
+- YUV / RAW / HEIC 支持鼠标位置缩放、拖拽平移、Fit、100% 和全屏
 - H.264 / H.265 一次解析 1 个文件，内置 FFmpeg / FFprobe 负责分析和播放代理
 - 点击或定位帧时暂停播放，并显示醒目的当前帧标记
 - 返回首页旁提供“重启应用”按钮

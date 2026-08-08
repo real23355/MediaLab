@@ -1,6 +1,6 @@
 {
   "name": "videoprobe-web",
-  "version": "0.0.3",
+  "version": "0.0.5",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
+    "build:local": "pnpm run build && node build/export-static.mjs",
     "start": "vinext start",
     "test": "pnpm run build && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",

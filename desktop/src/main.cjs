@@ -71,12 +71,12 @@ function createWindow() {
 
 ipcMain.handle("select-files", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: "选择 YUV / SYUV / HEIC / H.264 / H.265 文件",
+    title: "选择 YUV / SYUV / Bayer RAW / HEIC / H.264 / H.265 文件",
     properties: ["openFile", "multiSelections"],
     filters: [
       {
         name: "MediaLab 支持的文件",
-        extensions: ["yuv", "raw", "syuv", "heic", "heif", "264", "h264", "avc", "265", "h265", "hevc"]
+        extensions: ["yuv", "raw", "syuv", "nv12", "nv21", "heic", "heif", "264", "h264", "avc", "265", "h265", "hevc"]
       },
       { name: "所有文件", extensions: ["*"] }
     ]
@@ -195,9 +195,10 @@ ipcMain.handle("create-proxy", async (_event, filePath, kind, fps) => {
     `MediaLab-${base}-${Date.now()}-${Math.random().toString(16).slice(2)}.mp4`
   );
   tempOutputs.add(output);
-  const args = [
+  const proxyArgs = (hardware) => [
     "-hide_banner",
     "-loglevel", "error",
+    ...(hardware ? ["-hwaccel", "d3d11va"] : []),
     "-fflags", "+genpts",
     "-r", String(Math.max(1, Number(fps) || 25)),
     "-f", inputFormat,
@@ -211,8 +212,27 @@ ipcMain.handle("create-proxy", async (_event, filePath, kind, fps) => {
     "-y",
     output
   ];
-  await runTool(toolPath("ffmpeg"), args);
-  return pathToFileURL(output).toString();
+  try {
+    await runTool(toolPath("ffmpeg"), proxyArgs(true));
+    return {
+      url: pathToFileURL(output).toString(),
+      decoder: "Hardware Decode: D3D11VA",
+      hardware: true
+    };
+  } catch (hardwareError) {
+    try {
+      await fsp.unlink(output);
+    } catch {
+      // A failed or absent partial output is safe to ignore.
+    }
+    await runTool(toolPath("ffmpeg"), proxyArgs(false));
+    return {
+      url: pathToFileURL(output).toString(),
+      decoder: "Software Decode",
+      hardware: false,
+      fallbackReason: hardwareError.message
+    };
+  }
 });
 
 ipcMain.handle("app-version", () => app.getVersion());

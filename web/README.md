@@ -1,4 +1,4 @@
-# MediaLab Web V0.0.3
+# MediaLab Web V0.0.5
 
 本地优先的“视频码流与图像分析工具”。文件只在浏览器内存中处理，不上传到服务器。
 
@@ -7,8 +7,10 @@
 - YUV / RAW / SYUV 自动识别、手动校正、预览与逐帧播放
 - 自动读取本项目样例 SYUV 的文件头、分辨率、151 B 数据偏移并优先识别 NV21
 - HEIC / HEIF 本地解码与预览
-- YUV / HEIC 支持一次选择最多 10 个文件，逐文件选择解析类型
-- 解析后的 YUV / HEIC 文件以左侧标签页切换
+- YUV / RAW / HEIC 支持一次选择最多 10 个文件，逐文件选择解析类型
+- 解析后的 YUV / RAW / HEIC 文件以左侧标签页切换
+- Bayer RAW10 Packed/Unpacked16、四种 Bayer、灰度/RGB、Auto Stretch、Black/Gain 与像素检查
+- YUV / RAW / HEIC 支持鼠标位置缩放、拖拽平移、Fit、100% 和全屏
 - H.264 / H.265 Annex-B 裸码流一次解析 1 个文件
 - 播放或点击帧时显示醒目的当前帧标记
 - 帧大小图含纵轴数值、最大帧、最小帧和平均帧统计

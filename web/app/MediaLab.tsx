@@ -15,8 +15,26 @@ import {
 } from "../lib/media";
 import { decodeHeicWithWebCodecs } from "../lib/heic";
 import {
+  BAYER_PATTERNS,
+  RAW_PACKINGS,
+  bayerChannel,
+  bytesForRawFrame,
+  decodeRaw,
+  detectRaw,
+  rawLevels,
+  renderRawPreview,
+  type BayerPattern,
+  type RawConfig,
+  type RawLevels,
+  type RawPacking,
+  type RawViewMode,
+} from "../lib/raw";
+import {
   type ChangeEvent,
   type DragEvent,
+  type PointerEvent,
+  type ReactNode,
+  type WheelEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -35,7 +53,7 @@ declare global {
   }
 }
 
-const VERSION = "V0.0.3";
+const VERSION = "V0.0.5";
 const PAGE_SIZE = 100;
 const IMAGE_LIMIT = 10;
 
@@ -44,7 +62,8 @@ const KIND_OPTIONS: Array<{
   label: string;
   extension: string;
 }> = [
-  { value: "yuv", label: "YUV 原始图像", extension: ".yuv / .raw / .syuv" },
+  { value: "yuv", label: "YUV 原始图像", extension: ".yuv / .syuv" },
+  { value: "raw", label: "Bayer RAW 图像", extension: ".raw" },
   { value: "heic", label: "HEIC 图片", extension: ".heic / .heif" },
   { value: "h264", label: "H.264 裸码流", extension: ".264 / .h264 / .avc" },
   { value: "h265", label: "H.265 裸码流", extension: ".265 / .h265 / .hevc" },
@@ -76,7 +95,21 @@ type HeicDocument = {
   height: number;
 };
 
-type ImageDocument = YuvDocument | HeicDocument;
+type RawDocument = {
+  id: string;
+  kind: "raw";
+  file: File;
+  bytes: Uint8Array;
+  values: Uint16Array;
+  config: RawConfig;
+  levels: RawLevels;
+  mode: RawViewMode;
+  autoStretch: boolean;
+  blackLevel: number;
+  gain: number;
+};
+
+type ImageDocument = YuvDocument | RawDocument | HeicDocument;
 
 function uid(file: File, index = 0) {
   return `${file.name}-${file.size}-${file.lastModified}-${index}`;
@@ -127,6 +160,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 export default function MediaLab() {
   const fileInput = useRef<HTMLInputElement>(null);
   const yuvCanvas = useRef<HTMLCanvasElement>(null);
+  const rawCanvas = useRef<HTMLCanvasElement>(null);
   const streamCanvas = useRef<HTMLCanvasElement>(null);
   const decoder = useRef<VideoDecoder | null>(null);
   const playbackTimer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -187,7 +221,7 @@ export default function MediaLab() {
     returnHome();
     const accepted = incoming.slice(0, IMAGE_LIMIT);
     if (incoming.length > IMAGE_LIMIT) {
-      setError(`YUV / HEIC 一次最多选择 ${IMAGE_LIMIT} 个文件，已保留前 ${IMAGE_LIMIT} 个。`);
+      setError(`YUV / RAW / HEIC 一次最多选择 ${IMAGE_LIMIT} 个文件，已保留前 ${IMAGE_LIMIT} 个。`);
     }
     setPendingItems(
       accepted.map((file, index) => ({
@@ -219,7 +253,7 @@ export default function MediaLab() {
       return;
     }
     if (!streamItems.length && pendingItems.length > IMAGE_LIMIT) {
-      setError(`YUV / HEIC 一次最多解析 ${IMAGE_LIMIT} 个文件。`);
+      setError(`YUV / RAW / HEIC 一次最多解析 ${IMAGE_LIMIT} 个文件。`);
       return;
     }
 
@@ -263,6 +297,27 @@ export default function MediaLab() {
             config,
             frame: 0,
             fps: 25,
+          });
+        } else if (item.kind === "raw") {
+          if (!item.file.size) throw new Error(`${item.file.name} 是空文件。`);
+          if (item.file.size > 256 * 1024 * 1024) {
+            throw new Error(`${item.file.name} 超过 256 MB，当前浏览器版本拒绝一次性解码。`);
+          }
+          const data = new Uint8Array(await item.file.arrayBuffer());
+          const config = detectRaw(data.subarray(0, Math.min(data.byteLength, 2 * 1024 * 1024)), data.byteLength, item.file.name);
+          const values = decodeRaw(data, config);
+          docs.push({
+            id: item.id,
+            kind: "raw",
+            file: item.file,
+            bytes: data,
+            values,
+            config,
+            levels: rawLevels(values, config.bitDepth),
+            mode: "rgb",
+            autoStretch: true,
+            blackLevel: 0,
+            gain: 1,
           });
         } else {
           const bytes = new Uint8Array(await item.file.arrayBuffer());
@@ -322,6 +377,15 @@ export default function MediaLab() {
     [],
   );
 
+  const updateRawDoc = useCallback(
+    (id: string, update: (doc: RawDocument) => RawDocument) => {
+      setImageDocs((docs) =>
+        docs.map((doc) => (doc.id === id && doc.kind === "raw" ? update(doc) : doc)),
+      );
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!activeDoc || activeDoc.kind !== "yuv" || !yuvCanvas.current) return;
     const canvas = yuvCanvas.current;
@@ -332,6 +396,27 @@ export default function MediaLab() {
       canvas.getContext("2d", { alpha: false })?.putImageData(image, 0, 0);
     } catch {
       setError("当前参数超出了文件范围，请检查分辨率、格式或 SYUV 文件头。");
+    }
+  }, [activeDoc]);
+
+  useEffect(() => {
+    if (!activeDoc || activeDoc.kind !== "raw" || !rawCanvas.current) return;
+    const canvas = rawCanvas.current;
+    canvas.width = activeDoc.config.width;
+    canvas.height = activeDoc.config.height;
+    try {
+      const image = renderRawPreview(
+        activeDoc.values,
+        activeDoc.config,
+        activeDoc.mode,
+        activeDoc.levels,
+        activeDoc.autoStretch,
+        activeDoc.blackLevel,
+        activeDoc.gain,
+      );
+      canvas.getContext("2d", { alpha: false })?.putImageData(image, 0, 0);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "RAW 预览生成失败");
     }
   }, [activeDoc]);
 
@@ -511,6 +596,36 @@ export default function MediaLab() {
     });
   };
 
+  const updateRawConfig = (
+    field: "width" | "height" | "bitDepth" | "bayer" | "packing",
+    value: string,
+  ) => {
+    if (!activeDoc || activeDoc.kind !== "raw") return;
+    try {
+      const next: RawConfig = {
+        ...activeDoc.config,
+        width: field === "width" ? Math.max(1, Number(value)) : activeDoc.config.width,
+        height: field === "height" ? Math.max(1, Number(value)) : activeDoc.config.height,
+        bitDepth: field === "bitDepth" ? Math.max(1, Number(value)) : activeDoc.config.bitDepth,
+        bayer: field === "bayer" ? (value as BayerPattern) : activeDoc.config.bayer,
+        packing: field === "packing" ? (value as RawPacking) : activeDoc.config.packing,
+        frameBytes: 0,
+        reason: "手动调整",
+      };
+      next.frameBytes = bytesForRawFrame(next.width, next.height, next.bitDepth, next.packing);
+      const values = decodeRaw(activeDoc.bytes, next);
+      updateRawDoc(activeDoc.id, (doc) => ({
+        ...doc,
+        config: next,
+        values,
+        levels: rawLevels(values, next.bitDepth),
+      }));
+      setError("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "RAW 参数无效");
+    }
+  };
+
   const chartFrames = useMemo(() => {
     if (!stream?.frames.length) return [];
     const slots = Math.min(180, stream.frames.length);
@@ -555,11 +670,11 @@ export default function MediaLab() {
           <div className="hero-copy">
             <h1>MediaLab<br /><span>视频码流与图像分析工具</span></h1>
             <p className="hero-description">
-              支持 YUV / SYUV、HEIC 与 H.264 / H.265 裸码流；图像可批量解析，
+              支持 YUV / SYUV、Bayer RAW、HEIC 与 H.264 / H.265 裸码流；图像可批量解析，
               码流可播放并逐帧诊断。
             </p>
             <div className="feature-row">
-              <span>✓ 最多 10 个 YUV / HEIC</span>
+              <span>✓ YUV / RAW 专业缩放与像素检查</span>
               <span>✓ 逐帧大小与极值</span>
               <span>✓ 当前播放帧醒目标记</span>
             </div>
@@ -577,7 +692,7 @@ export default function MediaLab() {
         <section className="kind-picker shell">
           <div className="picker-copy">
             <h2>确认每个文件的解析方式</h2>
-            <p>类型选项位于文件名右侧。YUV / HEIC 最多 10 个，码流一次 1 个。</p>
+            <p>类型选项位于文件名右侧。YUV / RAW / HEIC 最多 10 个，码流一次 1 个。</p>
           </div>
           <div className="pending-list">
             {pendingItems.map((item, index) => (
@@ -621,7 +736,10 @@ export default function MediaLab() {
         <section className="workspace shell image-workspace">
           <FileTabs docs={imageDocs} activeId={activeDoc.id} onSelect={setActiveDocId} />
           <div className="image-content">
-            <FileSummary file={activeDoc.file} kind={activeDoc.kind === "yuv" ? "YUV / SYUV" : "HEIC"} />
+            <FileSummary
+              file={activeDoc.file}
+              kind={activeDoc.kind === "yuv" ? "YUV / SYUV" : activeDoc.kind === "raw" ? "Bayer RAW" : "HEIC"}
+            />
             {activeDoc.kind === "yuv" ? (
               <YuvViewer
                 doc={activeDoc}
@@ -636,6 +754,13 @@ export default function MediaLab() {
                 onFps={(fps) =>
                   updateYuvDoc(activeDoc.id, (doc) => ({ ...doc, fps }))
                 }
+              />
+            ) : activeDoc.kind === "raw" ? (
+              <RawViewer
+                doc={activeDoc}
+                canvasRef={rawCanvas}
+                onConfig={updateRawConfig}
+                onUpdate={(update) => updateRawDoc(activeDoc.id, update)}
               />
             ) : (
               <HeicViewer doc={activeDoc} />
@@ -789,7 +914,7 @@ export default function MediaLab() {
         className="visually-hidden"
         type="file"
         multiple
-        accept=".yuv,.raw,.syuv,.heic,.heif,.264,.h264,.avc,.265,.h265,.hevc,application/octet-stream,image/heic,image/heif"
+        accept=".yuv,.raw,.syuv,.nv12,.nv21,.heic,.heif,.264,.h264,.avc,.265,.h265,.hevc,application/octet-stream,image/heic,image/heif"
         onChange={onPick}
       />
     </main>
@@ -817,7 +942,7 @@ function FileTabs({
         >
           <b>{String(index + 1).padStart(2, "0")}</b>
           <span title={doc.file.name}>{doc.file.name}</span>
-          <em>{doc.kind === "yuv" ? "YUV" : "HEIC"}</em>
+          <em>{doc.kind === "yuv" ? "YUV" : doc.kind === "raw" ? "RAW" : "HEIC"}</em>
         </button>
       ))}
     </aside>
@@ -838,42 +963,139 @@ function ZoomToolbar({
   return (
     <div className="zoom-toolbar" aria-label="图片缩放控制">
       <button type="button" title="缩小" onClick={() => onZoom(zoom / 1.25)}>−</button>
-      <button type="button" className="zoom-value" title="实际大小" onClick={() => onZoom(1)}>
-        {Math.round(zoom * 100)}%
-      </button>
+      <select
+        className="zoom-value"
+        aria-label="当前缩放比例"
+        value={Math.round(zoom * 100)}
+        onChange={(event) => onZoom(Number(event.target.value) / 100)}
+      >
+        {[25, 50, 75, 100, 125, 150, 200, 300, 400, 800].map((value) => (
+          <option key={value} value={value}>{value}%</option>
+        ))}
+        {!([25, 50, 75, 100, 125, 150, 200, 300, 400, 800].includes(Math.round(zoom * 100))) && (
+          <option value={Math.round(zoom * 100)}>{Math.round(zoom * 100)}%</option>
+        )}
+      </select>
       <button type="button" title="放大" onClick={() => onZoom(zoom * 1.25)}>＋</button>
-      <button type="button" title="适应窗口" onClick={onFit}>适应</button>
+      <button type="button" title="适应窗口" onClick={onFit}>Fit</button>
+      <button type="button" title="实际大小" onClick={() => onZoom(1)}>100%</button>
       <button type="button" title="全屏查看" onClick={onFullscreen}>全屏</button>
     </div>
   );
 }
 
-function HeicViewer({ doc }: { doc: HeicDocument }) {
+function ImageViewport({
+  title,
+  detail,
+  width,
+  height,
+  resetKey,
+  className = "",
+  children,
+  onPixel,
+  status,
+}: {
+  title: string;
+  detail: string;
+  width: number;
+  height: number;
+  resetKey: string;
+  className?: string;
+  children: ReactNode;
+  onPixel?: (x: number, y: number) => void;
+  status?: string;
+}) {
   const panelRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
   const [zoom, setZoomState] = useState(1);
-  const setZoom = useCallback((value: number) => {
-    setZoomState(Math.max(0.1, Math.min(8, value)));
-  }, []);
+  const [fitMode, setFitMode] = useState(true);
+  const fitModeRef = useRef(true);
+  const [panning, setPanning] = useState(false);
+  const setZoom = useCallback((value: number, clientX?: number, clientY?: number) => {
+    const stage = stageRef.current;
+    const surface = surfaceRef.current;
+    const next = Math.max(0.1, Math.min(16, value));
+    fitModeRef.current = false;
+    setFitMode(false);
+    if (!stage || !surface) {
+      setZoomState(next);
+      return;
+    }
+    const bounds = stage.getBoundingClientRect();
+    const anchorX = clientX ?? bounds.left + stage.clientWidth / 2;
+    const anchorY = clientY ?? bounds.top + stage.clientHeight / 2;
+    const viewportX = anchorX - bounds.left;
+    const viewportY = anchorY - bounds.top;
+    const imageX = (stage.scrollLeft + viewportX - surface.offsetLeft) / zoom;
+    const imageY = (stage.scrollTop + viewportY - surface.offsetTop) / zoom;
+    setZoomState(next);
+    requestAnimationFrame(() => {
+      stage.scrollLeft = surface.offsetLeft + imageX * next - viewportX;
+      stage.scrollTop = surface.offsetTop + imageY * next - viewportY;
+    });
+  }, [zoom]);
   const fit = useCallback(() => {
     const stage = stageRef.current;
     if (!stage) return;
-    setZoom(Math.min(
-      1,
-      Math.max(1, stage.clientWidth - 32) / doc.width,
-      Math.max(1, stage.clientHeight - 32) / doc.height,
+    const style = getComputedStyle(stage);
+    const horizontalPadding = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+    const verticalPadding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+    const availableWidth = Math.max(1, stage.clientWidth - horizontalPadding);
+    const availableHeight = Math.max(1, stage.clientHeight - verticalPadding);
+    const next = Math.max(0.1, Math.min(
+      16,
+      availableWidth / width,
+      availableHeight / height,
     ));
-  }, [doc.height, doc.width, setZoom]);
+    fitModeRef.current = true;
+    setFitMode(true);
+    setZoomState(next);
+    requestAnimationFrame(() => {
+      stage.scrollLeft = 0;
+      stage.scrollTop = 0;
+    });
+  }, [height, width]);
   useEffect(() => {
     const frame = requestAnimationFrame(fit);
     return () => cancelAnimationFrame(frame);
-  }, [doc.id, fit]);
+  }, [resetKey, fit]);
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage || typeof ResizeObserver === "undefined") return;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      if (!fitModeRef.current) return;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if (fitModeRef.current) fit();
+      });
+    });
+    observer.observe(stage);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [fit]);
+
+  const updatePixel = (event: PointerEvent<HTMLDivElement>) => {
+    if (!onPixel || dragRef.current || !surfaceRef.current) return;
+    const bounds = surfaceRef.current.getBoundingClientRect();
+    const x = Math.floor(((event.clientX - bounds.left) / Math.max(1, bounds.width)) * width);
+    const y = Math.floor(((event.clientY - bounds.top) / Math.max(1, bounds.height)) * height);
+    if (x >= 0 && y >= 0 && x < width && y < height) onPixel(x, y);
+  };
 
   return (
-    <div ref={panelRef} className="panel heic-panel image-viewer-panel">
+    <div
+      ref={panelRef}
+      className={`viewer panel image-viewer-panel ${className}`}
+      data-fit-mode={fitMode ? "true" : "false"}
+    >
       <div className="viewer-header">
-        <span>HEIC 图像</span>
-        <small>{doc.width} × {doc.height}</small>
+        <span>{title}</span>
+        <small>{detail}</small>
         <ZoomToolbar
           zoom={zoom}
           onZoom={setZoom}
@@ -884,15 +1106,70 @@ function HeicViewer({ doc }: { doc: HeicDocument }) {
           }}
         />
       </div>
-      <div ref={stageRef} className="canvas-stage checkerboard heic-stage zoom-stage">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={doc.url}
-          alt={doc.file.name}
-          style={{ width: `${Math.max(1, Math.round(doc.width * zoom))}px`, maxWidth: "none" }}
-        />
+      <div
+        ref={stageRef}
+        className={`canvas-stage checkerboard zoom-stage ${panning ? "panning" : ""}`}
+        onWheel={(event: WheelEvent<HTMLDivElement>) => {
+          event.preventDefault();
+          setZoom(zoom * (event.deltaY < 0 ? 1.12 : 1 / 1.12), event.clientX, event.clientY);
+        }}
+        onPointerDown={(event) => {
+          if (event.button !== 0 && event.button !== 1) return;
+          const stage = stageRef.current;
+          if (!stage) return;
+          dragRef.current = { x: event.clientX, y: event.clientY, left: stage.scrollLeft, top: stage.scrollTop };
+          stage.setPointerCapture(event.pointerId);
+          setPanning(true);
+          event.preventDefault();
+        }}
+        onPointerMove={(event) => {
+          const drag = dragRef.current;
+          const stage = stageRef.current;
+          if (drag && stage) {
+            stage.scrollLeft = drag.left - (event.clientX - drag.x);
+            stage.scrollTop = drag.top - (event.clientY - drag.y);
+            return;
+          }
+          updatePixel(event);
+        }}
+        onPointerUp={(event) => {
+          dragRef.current = null;
+          setPanning(false);
+          event.currentTarget.releasePointerCapture(event.pointerId);
+          updatePixel(event);
+        }}
+        onPointerCancel={() => {
+          dragRef.current = null;
+          setPanning(false);
+        }}
+      >
+        <div
+          ref={surfaceRef}
+          className="image-surface"
+          style={{ width: `${Math.max(1, Math.round(width * zoom))}px`, height: `${Math.max(1, Math.round(height * zoom))}px` }}
+        >
+          {children}
+        </div>
       </div>
+      {status && <div className="viewer-status">{status} · Zoom {Math.round(zoom * 100)}%</div>}
     </div>
+  );
+}
+
+function HeicViewer({ doc }: { doc: HeicDocument }) {
+  return (
+    <ImageViewport
+      title="HEIC 图像"
+      detail={`${doc.width} × ${doc.height}`}
+      width={doc.width}
+      height={doc.height}
+      resetKey={doc.id}
+      className="heic-panel"
+      status={`${doc.width}×${doc.height} | HEIC`}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={doc.url} alt={doc.file.name} draggable={false} />
+    </ImageViewport>
   );
 }
 
@@ -912,25 +1189,7 @@ function YuvViewer({
   onFps: (fps: number) => void;
 }) {
   const [playing, setPlaying] = useState(false);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const stageRef = useRef<HTMLDivElement>(null);
-  const [zoom, setZoomState] = useState(1);
-  const setZoom = useCallback((value: number) => {
-    setZoomState(Math.max(0.1, Math.min(8, value)));
-  }, []);
-  const fit = useCallback(() => {
-    const stage = stageRef.current;
-    if (!stage) return;
-    setZoom(Math.min(
-      1,
-      Math.max(1, stage.clientWidth - 32) / doc.config.width,
-      Math.max(1, stage.clientHeight - 32) / doc.config.height,
-    ));
-  }, [doc.config.height, doc.config.width, setZoom]);
-  useEffect(() => {
-    const frame = requestAnimationFrame(fit);
-    return () => cancelAnimationFrame(frame);
-  }, [doc.id, fit]);
+  const [pixel, setPixel] = useState({ x: 0, y: 0 });
   useEffect(() => {
     if (!playing) return;
     const timer = setInterval(() => {
@@ -979,31 +1238,21 @@ function YuvViewer({
           </details>
         )}
       </aside>
-      <div ref={panelRef} className="viewer panel image-viewer-panel">
-        <div className="viewer-header">
-          <span>YUV 画面</span>
-          <small>帧 {doc.frame + 1} / {doc.config.frameCount}</small>
-          <ZoomToolbar
-            zoom={zoom}
-            onZoom={setZoom}
-            onFit={fit}
-            onFullscreen={() => {
-              if (document.fullscreenElement) void document.exitFullscreen();
-              else void panelRef.current?.requestFullscreen();
-            }}
-          />
-        </div>
-        <div ref={stageRef} className="canvas-stage checkerboard zoom-stage">
+      <div className="viewer-column">
+        <ImageViewport
+          title="YUV 画面"
+          detail={`帧 ${doc.frame + 1} / ${doc.config.frameCount}`}
+          width={doc.config.width}
+          height={doc.config.height}
+          resetKey={`${doc.id}-${doc.config.width}-${doc.config.height}`}
+          onPixel={(x, y) => setPixel({ x, y })}
+          status={`${doc.config.width}×${doc.config.height} | ${doc.config.format} | X:${pixel.x} Y:${pixel.y}`}
+        >
           <canvas
             ref={canvasRef}
             aria-label="YUV 图像预览"
-            style={{
-              width: `${Math.max(1, Math.round(doc.config.width * zoom))}px`,
-              height: `${Math.max(1, Math.round(doc.config.height * zoom))}px`,
-              maxWidth: "none",
-            }}
           />
-        </div>
+        </ImageViewport>
         <PlaybackControls
           playing={playing}
           frame={doc.frame}
@@ -1017,6 +1266,83 @@ function YuvViewer({
           onFps={onFps}
         />
       </div>
+    </div>
+  );
+}
+
+function RawViewer({
+  doc,
+  canvasRef,
+  onConfig,
+  onUpdate,
+}: {
+  doc: RawDocument;
+  canvasRef: React.RefObject<HTMLCanvasElement | null>;
+  onConfig: (field: "width" | "height" | "bitDepth" | "bayer" | "packing", value: string) => void;
+  onUpdate: (update: (doc: RawDocument) => RawDocument) => void;
+}) {
+  const [pixel, setPixel] = useState({ x: 0, y: 0 });
+  const rawValue = doc.values[pixel.y * doc.config.width + pixel.x] ?? 0;
+  const channel = bayerChannel(doc.config.bayer, pixel.x, pixel.y);
+  const packingLabel = RAW_PACKINGS.find((item) => item.value === doc.config.packing)?.label ?? doc.config.packing;
+  return (
+    <div className="workspace-grid">
+      <aside className="control-panel panel raw-controls">
+        <PanelTitle step="RAW" title="RAW 参数" subtitle="自动识别后仍可手动校正" />
+        <div className="field-pair">
+          <label>宽度<input type="number" min="1" value={doc.config.width} onChange={(event) => onConfig("width", event.target.value)} /></label>
+          <label>高度<input type="number" min="1" value={doc.config.height} onChange={(event) => onConfig("height", event.target.value)} /></label>
+        </div>
+        <div className="field-pair">
+          <label>Bit Depth
+            <select value={doc.config.bitDepth} onChange={(event) => onConfig("bitDepth", event.target.value)}>
+              {[8, 10, 12, 14, 16].map((value) => <option key={value} value={value}>{value} bit</option>)}
+            </select>
+          </label>
+          <label>Bayer
+            <select value={doc.config.bayer} onChange={(event) => onConfig("bayer", event.target.value)}>
+              {BAYER_PATTERNS.map((pattern) => <option key={pattern}>{pattern}</option>)}
+            </select>
+          </label>
+        </div>
+        <label>Packing Format
+          <select value={doc.config.packing} onChange={(event) => onConfig("packing", event.target.value)}>
+            {RAW_PACKINGS.map((packing) => <option key={packing.value} value={packing.value}>{packing.label}</option>)}
+          </select>
+        </label>
+        <label>显示模式
+          <select value={doc.mode} onChange={(event) => onUpdate((current) => ({ ...current, mode: event.target.value as RawViewMode }))}>
+            <option value="rgb">Demosaic RGB</option>
+            <option value="gray">Grayscale RAW</option>
+          </select>
+        </label>
+        <label className="check-field">
+          <input type="checkbox" checked={doc.autoStretch} onChange={(event) => onUpdate((current) => ({ ...current, autoStretch: event.target.checked }))} />
+          Auto Stretch（0.1%–99.9%）
+        </label>
+        <div className="field-pair">
+          <label>Black Level<input type="number" min="0" max={2 ** doc.config.bitDepth - 1} value={doc.blackLevel} onChange={(event) => onUpdate((current) => ({ ...current, blackLevel: Math.max(0, Number(event.target.value) || 0) }))} /></label>
+          <label>Preview Gain<input type="number" min="0.1" max="16" step="0.1" value={doc.gain} onChange={(event) => onUpdate((current) => ({ ...current, gain: Math.max(0.1, Number(event.target.value) || 1) }))} /></label>
+        </div>
+        <div className="detected">
+          <span>检测结果</span>
+          <strong>{doc.config.width} × {doc.config.height} · {doc.config.bayer} · {doc.config.bitDepth} bit</strong>
+          <small>{packingLabel} · {formatBytes(doc.config.frameBytes)}</small>
+          <small>数据范围 {doc.levels.min}–{doc.levels.max} · 拉伸 {doc.levels.low}–{doc.levels.high}</small>
+          <small>{doc.config.reason}</small>
+        </div>
+      </aside>
+      <ImageViewport
+        title="Bayer RAW 画面"
+        detail={`${doc.mode === "rgb" ? "Demosaic RGB" : "Grayscale"} · ${doc.config.bayer}`}
+        width={doc.config.width}
+        height={doc.config.height}
+        resetKey={`${doc.id}-${doc.config.width}-${doc.config.height}`}
+        onPixel={(x, y) => setPixel({ x, y })}
+        status={`${doc.config.width}×${doc.config.height} | ${doc.config.bayer} | RAW${doc.config.bitDepth} | X:${pixel.x} Y:${pixel.y} RAW:${rawValue} ${channel}`}
+      >
+        <canvas ref={canvasRef} aria-label="Bayer RAW 图像预览" />
+      </ImageViewport>
     </div>
   );
 }
@@ -1044,9 +1370,9 @@ function DropZone({
     >
       <div className="drop-visual"><span /><b>+</b></div>
       <h2>拖入媒体文件</h2>
-      <p>YUV / SYUV · HEIC · H.264 · H.265</p>
+      <p>YUV / SYUV · Bayer RAW · HEIC · H.264 · H.265</p>
       <button className="button primary" type="button" onClick={onBrowse}>选择文件</button>
-      <small>YUV / HEIC 可多选（最多 10 个）；H.264 / H.265 每次仅 1 个</small>
+      <small>YUV / RAW / HEIC 可多选（最多 10 个）；H.264 / H.265 每次仅 1 个</small>
     </div>
   );
 }

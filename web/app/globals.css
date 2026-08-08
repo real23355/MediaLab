@@ -20,6 +20,7 @@
 
 html {
   background: var(--paper);
+  height: 100%;
 }
 
 body {
@@ -58,9 +59,10 @@ summary:focus-visible {
   display: flex;
   height: 72px;
   justify-content: space-between;
-  margin: 0 auto;
-  max-width: 1440px;
+  margin: 0;
+  max-width: none;
   padding: 0 40px;
+  width: 100%;
 }
 
 .brand {
@@ -327,10 +329,11 @@ summary:focus-visible {
 }
 
 .shell {
-  margin: 0 auto;
-  max-width: 1380px;
+  margin: 0;
+  max-width: none;
   padding-left: 38px;
   padding-right: 38px;
+  width: 100%;
 }
 
 .kind-picker {
@@ -504,7 +507,8 @@ summary:focus-visible {
 .workspace-grid {
   display: grid;
   gap: 22px;
-  grid-template-columns: 310px minmax(0, 1fr);
+  grid-template-columns: minmax(280px, 310px) minmax(0, 1fr);
+  min-height: 0;
 }
 
 .panel {
@@ -730,7 +734,7 @@ summary:focus-visible {
 
 .canvas-stage canvas {
   display: block;
-  max-height: min(64vh, 720px);
+  max-height: 100%;
   max-width: 100%;
   object-fit: contain;
 }
@@ -1306,7 +1310,7 @@ tbody tr.selected {
   }
 }
 
-/* MediaLab V0.0.3 */
+/* MediaLab V0.0.5 */
 .brand-button {
   background: transparent;
   border: 0;
@@ -1383,22 +1387,65 @@ tbody tr.selected {
   display: grid;
   gap: 18px;
   grid-template-columns: 230px minmax(0, 1fr);
+  height: calc(100dvh - 72px);
+  min-height: 0;
+  overflow: hidden;
+  padding: 16px 20px 18px;
 }
 
 .image-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.image-content > .file-summary {
+  flex: 0 0 auto;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+}
+
+.image-content > .workspace-grid,
+.image-content > .image-viewer-panel {
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
+}
+
+.image-content > .workspace-grid {
+  grid-template-columns: minmax(280px, 310px) minmax(0, 1fr);
+}
+
+.image-content .control-panel {
+  align-self: stretch;
+  height: 100%;
+  overflow: auto;
+}
+
+.viewer-column {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   min-width: 0;
 }
 
+.viewer-column > .image-viewer-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .file-tabs {
-  align-self: start;
+  align-self: stretch;
   background: #eef1ed;
   border: 1px solid var(--line);
   border-radius: 15px;
-  max-height: calc(100vh - 130px);
+  height: 100%;
+  max-height: none;
   overflow: auto;
   padding: 12px;
-  position: sticky;
-  top: 90px;
+  position: static;
 }
 
 .file-tabs h2 {
@@ -1459,7 +1506,11 @@ tbody tr.selected {
 }
 
 .heic-stage {
-  min-height: 620px;
+  min-height: 0;
+}
+
+.heic-panel .zoom-stage {
+  min-height: 0;
 }
 
 .heic-stage img {
@@ -1494,23 +1545,86 @@ tbody tr.selected {
 }
 
 .zoom-toolbar .zoom-value {
+  background: #f5f7f4;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
   font-family: monospace;
+  height: 29px;
   min-width: 55px;
+  padding: 0 5px;
 }
 
 .zoom-stage {
   align-items: flex-start;
+  cursor: grab;
+  flex: 1 1 auto;
+  height: auto;
   justify-content: flex-start;
+  min-height: 0;
   overflow: auto;
   padding: 16px;
+  touch-action: none;
+  user-select: none;
 }
 
-.zoom-stage canvas,
-.zoom-stage img {
+.zoom-stage.panning {
+  cursor: grabbing;
+}
+
+.image-surface {
   flex: 0 0 auto;
+  margin: auto;
+  position: relative;
+}
+
+.image-viewer-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.image-viewer-panel .viewer-header,
+.image-viewer-panel .viewer-status,
+.viewer-column > .playback {
+  flex: 0 0 auto;
+}
+
+.image-surface canvas,
+.image-surface img {
+  display: block;
+  height: 100%;
   max-height: none;
   max-width: none;
-  transform-origin: top left;
+  object-fit: fill;
+  pointer-events: none;
+  width: 100%;
+}
+
+.viewer-status {
+  background: #f7f8f6;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-family: monospace;
+  font-size: 9px;
+  min-height: 30px;
+  overflow: hidden;
+  padding: 9px 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.raw-controls .check-field {
+  align-items: center;
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+}
+
+.raw-controls .check-field input {
+  height: 15px;
+  width: 15px;
 }
 
 .image-viewer-panel:fullscreen {
@@ -1528,6 +1642,7 @@ tbody tr.selected {
 
 .image-viewer-panel:fullscreen .zoom-stage {
   flex: 1;
+  height: auto;
   min-height: 0;
 }
 
@@ -1634,6 +1749,10 @@ tbody tr.selected td:first-child {
 
   .image-workspace {
     grid-template-columns: 190px minmax(0, 1fr);
+  }
+
+  .image-content > .workspace-grid {
+    grid-template-columns: 260px minmax(0, 1fr);
   }
 }
 

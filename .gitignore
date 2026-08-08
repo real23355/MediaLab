@@ -8,6 +8,7 @@ release/
 out/
 coverage/
 /artifacts/
+/release/
 
 # Local configuration and logs
 .env*
