@@ -1,4 +1,4 @@
-# MediaLab Web V0.0.5
+# MediaLab Web V0.0.6
 
 这是已完成构建的本地优先网页版本，无需执行 `npm install`。
 

@@ -6,7 +6,7 @@ $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopba
 $listener.Start()
 $url = "http://127.0.0.1:$port/"
 if (-not $NoBrowser) { Start-Process $url }
-Write-Host "MediaLab Web V0.0.5 started: $url"
+Write-Host "MediaLab Web V0.0.6 started: $url"
 Write-Host 'Close this window to stop the local server.'
 
 $mime = @{

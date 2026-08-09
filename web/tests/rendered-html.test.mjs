@@ -50,3 +50,20 @@ test("ships product metadata and no starter preview", async () => {
   await access(new URL("public/vendor/heic2any.js", root));
   await access(new URL("lib/raw.ts", root));
 });
+
+test("ships V0.0.6 compare and append controls", async () => {
+  const [source, packageJson] = await Promise.all([
+    readFile(new URL("../app/MediaLab.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+  ]);
+  assert.match(source, /V0\.0\.6/);
+  assert.match(packageJson, /"version": "0\.0\.6"/);
+  assert.match(source, /Compare 图片对比/);
+  assert.match(source, /Play Both/);
+  assert.match(source, /Pause Both/);
+  assert.match(source, /Sync View/);
+  assert.match(source, /Sync Playback/);
+  assert.match(source, /当前工作区为图片对比模式，只能添加图片类文件/);
+  assert.match(source, /当前工作区为视频对比模式，只能添加 H\.264\/H\.265 视频文件/);
+  assert.match(source, /TOTAL_FILE_LIMIT/);
+});

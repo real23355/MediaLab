@@ -71,12 +71,12 @@ function createWindow() {
 
 ipcMain.handle("select-files", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: "选择 YUV / SYUV / Bayer RAW / HEIC / H.264 / H.265 文件",
+    title: "选择 YUV / SYUV / Bayer RAW / HEIC / RGB 图片 / H.264 / H.265 文件",
     properties: ["openFile", "multiSelections"],
     filters: [
       {
         name: "MediaLab 支持的文件",
-        extensions: ["yuv", "raw", "syuv", "nv12", "nv21", "heic", "heif", "264", "h264", "avc", "265", "h265", "hevc"]
+        extensions: ["yuv", "raw", "syuv", "nv12", "nv21", "heic", "heif", "png", "jpg", "jpeg", "bmp", "webp", "264", "h264", "avc", "265", "h265", "hevc"]
       },
       { name: "所有文件", extensions: ["*"] }
     ]

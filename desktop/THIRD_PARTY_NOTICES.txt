@@ -1,4 +1,4 @@
-MediaLab Portable V0.0.5 — Third-party notices
+MediaLab Portable V0.0.6 — Third-party notices
 
 FFmpeg / FFprobe
 The executables are invoked as independent processes.

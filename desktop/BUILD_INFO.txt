@@ -1,16 +1,16 @@
-MediaLab Portable V0.0.5
-Build date: 2026-08-08
+MediaLab Portable V0.0.6
+Build date: 2026-08-09
 Target: Windows x64 portable
 Execution level: asInvoker（当前用户权限，无需管理员权限）
 
 Portable executable:
-release/MediaLab-Portable-0.0.5.exe
+release/MediaLab-Portable-0.0.6.exe
 
 Size:
-123829778 bytes
+123834210 bytes
 
 SHA-256:
-32D5F69A9261F3C2F074008192F1C31C400A6DBE5C522B420038CFAB3F6826C8
+C911971A799CF053A1DD3AE2539D5A41FFFCC63A087B0BD13A51EED0DAEEB754
 
 Validated:
 - Web production build and rendered HTML tests passed
@@ -20,11 +20,14 @@ Validated:
 - Zoom at cursor, 1:1, Fit, pan and pixel inspection were verified
 - Responsive Viewer measured at 1280x720, 1920x1080, 2560x1440 and 3840x2160
 - H.264/H.265 proxy decode prefers D3D11VA and falls back to software decode
+- Image Compare Sync View and normalized pan regression passed
+- H.264/H.265 Compare Play Both, Pause Both, sync seek and frame step passed
+- Independent per-video D3D11VA/software fallback regression passed
 - Electron source syntax checks passed
 - Packaged app.asar contains index.html, renderer.js, media.js, raw.js and heic.cjs
 - Packaged resources contain FFmpeg, FFprobe and third-party notices
 - Packaged FFprobe/FFmpeg validated H.265 and H.264 1920×1080 streams
-- Portable executable metadata reports MediaLab 0.0.5
+- Portable executable metadata reports MediaLab 0.0.6
 
 Notes:
 - The executable is intentionally not code-signed with a publisher certificate.

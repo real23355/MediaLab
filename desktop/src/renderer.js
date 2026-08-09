@@ -4,11 +4,22 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const IMAGE_LIMIT = 10;
 const PAGE_SIZE = 100;
+const TOTAL_FILE_LIMIT = Math.floor(4.2 * 1024 * 1024 * 1024);
 
 const state = {
   pending: [],
   docs: [],
   activeDocId: "",
+  streams: [],
+  activeStreamId: "",
+  compareMode: false,
+  leftId: "",
+  rightId: "",
+  syncView: true,
+  syncPlayback: true,
+  compareRenderToken: 0,
+  compareViews: { left: null, right: null },
+  compareSyncGuard: false,
   yuvTimer: null,
   renderToken: 0,
   sessionToken: 0,
@@ -46,9 +57,20 @@ function extensionKind(name) {
   const lower = name.toLowerCase();
   if (/\.raw$/.test(lower)) return "raw";
   if (/\.(heic|heif)$/.test(lower)) return "heic";
+  if (/\.(png|jpe?g|bmp|webp)$/.test(lower)) return "image";
   if (/\.(265|h265|hevc)$/.test(lower)) return "h265";
   if (/\.(264|h264|avc)$/.test(lower)) return "h264";
   return "yuv";
+}
+
+function isVideoKind(kind) {
+  return kind === "h264" || kind === "h265";
+}
+
+function currentWorkspaceKind() {
+  if (state.docs.length) return "image";
+  if (state.streams.length) return "video";
+  return null;
 }
 
 function fileMarkup(file, label = "") {
@@ -67,10 +89,16 @@ function fileMarkup(file, label = "") {
 function clearDocuments() {
   stopYuv();
   state.docs.forEach((doc) => {
-    if (doc.kind === "heic" && doc.url) URL.revokeObjectURL(doc.url);
+    if ((doc.kind === "heic" || doc.kind === "image") && doc.url) URL.revokeObjectURL(doc.url);
   });
   state.docs = [];
   state.activeDocId = "";
+  state.streams = [];
+  state.activeStreamId = "";
+  state.compareMode = false;
+  state.leftId = "";
+  state.rightId = "";
+  state.compareViews = { left: null, right: null };
 }
 
 function returnHome() {
@@ -85,6 +113,8 @@ function returnHome() {
   show($("#workspace"), false);
   $("#workspace").classList.remove("image-mode", "stream-mode");
   show($("#new-file"), false);
+  show($("#add-file"), false);
+  show($("#compare-mode"), false);
   show($("#restart-app"), false);
   show($("#toast"), false);
 }
@@ -92,23 +122,63 @@ function returnHome() {
 $("#new-file").addEventListener("click", returnHome);
 $("#brand-home").addEventListener("click", returnHome);
 $("#restart-app").addEventListener("click", () => window.desktop.restartApp());
+$("#add-file").addEventListener("click", async () => receiveInfos(await window.desktop.selectFiles()));
+$("#compare-mode").addEventListener("click", () => {
+  const count = state.docs.length || state.streams.length;
+  if (count < 2) return;
+  state.compareMode = !state.compareMode;
+  $("#compare-mode").textContent = state.compareMode ? "退出 Compare" : "Compare";
+  if (state.docs.length) renderImageCompare();
+  else renderStreamCompare();
+});
 
 async function receiveInfos(infos) {
   if (!infos?.length) return;
-  returnHome();
-  const accepted = infos.slice(0, IMAGE_LIMIT);
-  if (infos.length > IMAGE_LIMIT) {
-    toast(`YUV / RAW / HEIC 一次最多选择 ${IMAGE_LIMIT} 个文件，已保留前 ${IMAGE_LIMIT} 个。`);
+  const detected = infos.map((file) => ({ ...file, kind: extensionKind(file.name) }));
+  const incomingKind = isVideoKind(detected[0].kind) ? "video" : "image";
+  if (detected.some((file) => (isVideoKind(file.kind) ? "video" : "image") !== incomingKind)) {
+    toast("请不要同时拖入图片与视频；请先建立一种媒体类型的工作区。");
+    return;
   }
-  state.pending = accepted.map((file, index) => ({
+  const workspaceKind = currentWorkspaceKind();
+  if (workspaceKind && workspaceKind !== incomingKind) {
+    toast(workspaceKind === "image"
+      ? "当前工作区为图片对比模式，只能添加图片类文件"
+      : "当前工作区为视频对比模式，只能添加 H.264/H.265 视频文件");
+    return;
+  }
+  const known = new Set([
+    ...state.pending.map((file) => file.path),
+    ...state.docs.map((doc) => doc.file.path),
+    ...state.streams.map((doc) => doc.file.path)
+  ]);
+  let accepted = detected.filter((file) => !known.has(file.path));
+  if (!accepted.length) {
+    toast("这些文件已经在当前工作区中。");
+    return;
+  }
+  if (incomingKind === "image") {
+    const remaining = Math.max(0, IMAGE_LIMIT - state.docs.length - state.pending.length);
+    if (accepted.length > remaining) {
+      toast(`图片类文件最多 ${IMAGE_LIMIT} 个，已保留可加入的前 ${remaining} 个。`);
+      accepted = accepted.slice(0, remaining);
+    }
+  }
+  const total = [...state.pending, ...state.docs.map((doc) => doc.file), ...state.streams.map((doc) => doc.file), ...accepted]
+    .reduce((sum, file) => sum + file.size, 0);
+  if (total > TOTAL_FILE_LIMIT) {
+    toast("加入后文件总量将超过 4.2 GB 限制，请减少文件数量。");
+    return;
+  }
+  state.pending.push(...accepted.map((file, index) => ({
     ...file,
-    id: `${file.path}-${index}`,
-    kind: extensionKind(file.name)
-  }));
+    id: `${file.path}-${Date.now()}-${index}`
+  })));
   renderPendingList();
   show($("#home"), false);
   show($("#type-screen"), true);
   show($("#new-file"), true);
+  show($("#add-file"), true);
   show($("#restart-app"), true);
 }
 
@@ -144,11 +214,23 @@ $("#drop-zone").addEventListener("drop", async (event) => {
   await receiveDroppedFiles([...event.dataTransfer.files]);
 });
 
+$("#workspace").addEventListener("dragover", (event) => {
+  event.preventDefault();
+  $("#workspace").classList.add("workspace-dragging");
+});
+$("#workspace").addEventListener("dragleave", () => $("#workspace").classList.remove("workspace-dragging"));
+$("#workspace").addEventListener("drop", async (event) => {
+  event.preventDefault();
+  $("#workspace").classList.remove("workspace-dragging");
+  await receiveDroppedFiles([...event.dataTransfer.files]);
+});
+
 function renderPendingList() {
   const options = [
     ["yuv", "YUV 原始图像"],
     ["raw", "Bayer RAW 图像"],
     ["heic", "HEIC 图片"],
+    ["image", "RGB / 普通图片"],
     ["h264", "H.264 裸码流"],
     ["h265", "H.265 裸码流"]
   ];
@@ -178,22 +260,38 @@ $("#parse-files").addEventListener("click", parsePendingFiles);
 async function parsePendingFiles() {
   const sessionToken = state.sessionToken;
   const streamFiles = state.pending.filter((file) => file.kind === "h264" || file.kind === "h265");
-  if (streamFiles.length && state.pending.length !== 1) {
-    toast("H.264 / H.265 当前一次只支持一个文件，请返回首页后单独选择该码流。");
+  if (streamFiles.length && streamFiles.length !== state.pending.length) {
+    toast("同一批次不能混合图片与视频文件。");
+    return;
+  }
+  const pendingKind = streamFiles.length ? "video" : "image";
+  const workspaceKind = currentWorkspaceKind();
+  if (workspaceKind && workspaceKind !== pendingKind) {
+    toast(workspaceKind === "image"
+      ? "当前工作区为图片对比模式，只能添加图片类文件"
+      : "当前工作区为视频对比模式，只能添加 H.264/H.265 视频文件");
     return;
   }
   const button = $("#parse-files");
   button.disabled = true;
   button.textContent = "正在解析…";
   try {
-    if (streamFiles[0]) {
+    if (streamFiles.length) {
       show($("#type-screen"), false);
       show($("#workspace"), true);
       show($("#image-layout"), false);
       show($("#stream-workspace"), true);
       $("#workspace").classList.remove("image-mode");
       $("#workspace").classList.add("stream-mode");
-      await openStream(streamFiles[0], streamFiles[0].kind);
+      const streams = [];
+      for (const file of streamFiles) streams.push(await createStreamDocument(file, file.kind));
+      state.streams.push(...streams);
+      state.pending = [];
+      ensureCompareSelection(state.streams);
+      renderStreamTabs();
+      activateStreamDocument(streams[0]);
+      show($("#compare-mode"), state.streams.length >= 2);
+      if (state.compareMode) renderStreamCompare();
       return;
     }
     const docs = [];
@@ -201,15 +299,15 @@ async function parsePendingFiles() {
       if (file.kind === "yuv") docs.push(await createYuvDocument(file));
       else if (file.kind === "raw") docs.push(await createRawDocument(file));
       else if (file.kind === "heic") docs.push(await createHeicDocument(file));
+      else if (file.kind === "image") docs.push(await createImageDocument(file));
       if (sessionToken !== state.sessionToken) {
         docs.forEach((doc) => {
-          if (doc.kind === "heic" && doc.url) URL.revokeObjectURL(doc.url);
+          if ((doc.kind === "heic" || doc.kind === "image") && doc.url) URL.revokeObjectURL(doc.url);
         });
         return;
       }
     }
-    clearDocuments();
-    state.docs = docs;
+    state.docs.push(...docs);
     state.activeDocId = docs[0]?.id || "";
     state.pending = [];
     show($("#type-screen"), false);
@@ -218,8 +316,11 @@ async function parsePendingFiles() {
     show($("#stream-workspace"), false);
     $("#workspace").classList.remove("stream-mode");
     $("#workspace").classList.add("image-mode");
+    ensureCompareSelection(state.docs);
+    show($("#compare-mode"), state.docs.length >= 2);
     renderFileTabs();
-    await showActiveDocument();
+    if (state.compareMode) await renderImageCompare();
+    else await showActiveDocument();
   } catch (error) {
     toast(`解析失败：${error.message}`);
   } finally {
@@ -308,6 +409,18 @@ async function createHeicDocument(file) {
   };
 }
 
+async function createImageDocument(file) {
+  if (file.size > 256 * 1024 * 1024) throw new Error(`${file.name} 超过 256 MB，无法在当前版本中读取。`);
+  const bytes = new Uint8Array(await window.desktop.readSlice(file.path, 0, file.size));
+  const extension = file.name.toLowerCase().split(".").pop();
+  const mime = extension === "png" ? "image/png"
+    : extension === "webp" ? "image/webp"
+      : extension === "bmp" ? "image/bmp" : "image/jpeg";
+  const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+  const size = await loadImageSize(url);
+  return { id: file.id, kind: "image", file, url, ...size, zoom: null, fitMode: true };
+}
+
 function withTimeout(promise, timeoutMs, message) {
   let timeout;
   return Promise.race([
@@ -331,25 +444,45 @@ function activeDocument() {
   return state.docs.find((doc) => doc.id === state.activeDocId) || state.docs[0];
 }
 
+function ensureCompareSelection(collection) {
+  if (!collection.length) return;
+  if (!collection.some((item) => item.id === state.leftId)) state.leftId = collection[0].id;
+  if (!collection.some((item) => item.id === state.rightId) || (collection.length > 1 && state.rightId === state.leftId)) {
+    state.rightId = collection[1]?.id || collection[0].id;
+  }
+}
+
 function renderFileTabs() {
   $("#file-tabs").innerHTML = `
     <h2>已解析文件</h2>
     ${state.docs.map((doc, index) => `
-      <button data-id="${escapeHtml(doc.id)}" class="${doc.id === state.activeDocId ? "active" : ""}">
-        <b>${String(index + 1).padStart(2, "0")}</b>
-        <span title="${escapeHtml(doc.file.name)}">${escapeHtml(doc.file.name)}</span>
-        <em>${doc.kind === "yuv" ? "YUV" : doc.kind === "raw" ? "RAW" : "HEIC"}</em>
-      </button>
+      <div class="file-tab-row ${doc.id === state.activeDocId ? "active" : ""}" data-id="${escapeHtml(doc.id)}">
+        <button class="doc-select">
+          <b>${String(index + 1).padStart(2, "0")}</b>
+          <span title="${escapeHtml(doc.file.name)}">${escapeHtml(doc.file.name)}</span>
+          <em>${doc.kind === "yuv" ? "YUV" : doc.kind === "raw" ? "RAW" : doc.kind === "heic" ? "HEIC" : "RGB"}</em>
+        </button>
+        <div class="side-assign"><button data-side="left" class="${doc.id === state.leftId ? "selected" : ""}">Left</button><button data-side="right" class="${doc.id === state.rightId ? "selected" : ""}">Right</button></div>
+      </div>
     `).join("")}
+    <button id="add-image-file" class="add-file-tab">＋ 拖入或追加文件</button>
   `;
-  $$("#file-tabs button").forEach((button) => {
+  $$("#file-tabs .doc-select").forEach((button) => {
     button.addEventListener("click", async () => {
       stopYuv();
-      state.activeDocId = button.dataset.id;
+      state.activeDocId = button.closest(".file-tab-row").dataset.id;
       renderFileTabs();
-      await showActiveDocument();
+      if (!state.compareMode) await showActiveDocument();
     });
   });
+  $$("#file-tabs .side-assign button").forEach((button) => button.addEventListener("click", async () => {
+    const id = button.closest(".file-tab-row").dataset.id;
+    if (button.dataset.side === "left") state.leftId = id;
+    else state.rightId = id;
+    renderFileTabs();
+    if (state.compareMode) await renderImageCompare();
+  }));
+  $("#add-image-file").addEventListener("click", async () => receiveInfos(await window.desktop.selectFiles()));
 }
 
 async function showActiveDocument() {
@@ -357,7 +490,7 @@ async function showActiveDocument() {
   if (!doc) return;
   $("#file-summary").innerHTML = fileMarkup(
     doc.file,
-    doc.kind === "yuv" ? "YUV / SYUV" : doc.kind === "raw" ? "Bayer RAW" : "HEIC"
+    doc.kind === "yuv" ? "YUV / SYUV" : doc.kind === "raw" ? "Bayer RAW" : doc.kind === "heic" ? "HEIC" : "RGB 图片"
   );
   show($("#yuv-workspace"), doc.kind === "yuv");
   show($("#raw-workspace"), doc.kind === "raw");
@@ -396,7 +529,7 @@ function viewerDocument(viewer) {
   if (!doc) return null;
   if (viewer === "yuv" && doc.kind === "yuv") return doc;
   if (viewer === "raw" && doc.kind === "raw") return doc;
-  if (viewer === "heic" && doc.kind === "heic") return doc;
+  if (viewer === "heic" && (doc.kind === "heic" || doc.kind === "image")) return doc;
   return null;
 }
 
@@ -419,7 +552,7 @@ function updateViewerStatus(viewer) {
     const channel = R.bayerChannel(doc.config.bayer, pixel.x, pixel.y);
     $("#raw-status").textContent = `${doc.config.width}×${doc.config.height} | ${doc.config.bayer} | RAW${doc.config.bitDepth} | Zoom ${zoom}% | X:${pixel.x} Y:${pixel.y} RAW:${value} ${channel}`;
   } else {
-    $("#heic-status").textContent = `${doc.width}×${doc.height} | HEIC | Zoom ${zoom}%`;
+    $("#heic-status").textContent = `${doc.width}×${doc.height} | ${doc.kind === "heic" ? "HEIC" : "RGB"} | Zoom ${zoom}%`;
   }
 }
 
@@ -817,6 +950,227 @@ $("#raw-gain").addEventListener("change", async (event) => {
   await renderRawFrame();
 });
 
+function compareDoc(side) {
+  const id = side === "left" ? state.leftId : state.rightId;
+  return state.docs.find((doc) => doc.id === id);
+}
+
+function compareDocSize(doc) {
+  return doc.kind === "heic" || doc.kind === "image"
+    ? { width: doc.width, height: doc.height }
+    : { width: doc.config.width, height: doc.config.height };
+}
+
+function compareFormat(doc) {
+  if (doc.kind === "yuv") return `${doc.config.format} · 帧 ${doc.frame + 1}/${doc.config.frameCount}`;
+  if (doc.kind === "raw") return `${doc.config.bayer} · RAW${doc.config.bitDepth}`;
+  return doc.kind === "heic" ? "HEIC" : "RGB";
+}
+
+async function renderImageCompare() {
+  const container = $("#image-compare");
+  const enabled = state.compareMode && state.docs.length >= 2;
+  show(container, enabled);
+  show($("#yuv-workspace"), !enabled && activeDocument()?.kind === "yuv");
+  show($("#raw-workspace"), !enabled && activeDocument()?.kind === "raw");
+  show($("#heic-workspace"), !enabled && activeDocument()?.kind === "heic");
+  show($("#file-summary"), !enabled);
+  if (!enabled) {
+    if (activeDocument()) await showActiveDocument();
+    return;
+  }
+  ensureCompareSelection(state.docs);
+  const left = compareDoc("left");
+  const right = compareDoc("right");
+  if (!left || !right) return;
+  const token = ++state.compareRenderToken;
+  const cards = [["left", "Left", left], ["right", "Right", right]].map(([side, label, doc]) => {
+    const size = compareDocSize(doc);
+    const media = doc.kind === "heic" || doc.kind === "image"
+      ? `<img alt="${escapeHtml(doc.file.name)}" draggable="false" />`
+      : "<canvas></canvas>";
+    return `<section class="compare-side" data-side="${side}">
+      <div class="compare-side-label"><b>${label}</b><span title="${escapeHtml(doc.file.name)}">${escapeHtml(doc.file.name)}</span><em>${escapeHtml(compareFormat(doc))}</em></div>
+      <div class="panel viewer image-viewer-panel compare-image-viewer">
+        <div class="viewer-head"><strong>${label} Viewer</strong><span>${size.width} × ${size.height}</span><div class="zoom-toolbar">
+          <button data-action="out">−</button><span class="compare-zoom-value">100%</span><button data-action="in">＋</button><button data-action="fit">Fit</button><button data-action="reset">100%</button><button data-action="fullscreen">全屏</button>
+        </div></div>
+        <div class="canvas-stage checker zoom-stage compare-stage"><div class="image-surface">${media}</div></div>
+        <div class="viewer-status">${size.width}×${size.height} | ${escapeHtml(compareFormat(doc))} | X:0 Y:0</div>
+      </div>
+    </section>`;
+  }).join("");
+  container.innerHTML = `<div class="compare-toolbar panel"><strong>Compare 图片对比</strong><label><input id="sync-view" type="checkbox" ${state.syncView ? "checked" : ""}/> Sync View</label><span>${state.syncView ? "Zoom / Pan / Fit / 100% 联动" : "左右视图独立"}</span></div><div class="compare-grid image-compare-grid">${cards}</div>`;
+  $("#sync-view").addEventListener("change", (event) => {
+    state.syncView = event.target.checked;
+    renderImageCompare();
+  });
+  await Promise.all([renderCompareImage("left", left, token), renderCompareImage("right", right, token)]);
+  if (token !== state.compareRenderToken) return;
+  bindCompareImageControls("left");
+  bindCompareImageControls("right");
+  requestAnimationFrame(() => {
+    fitCompareImage("left", false);
+    fitCompareImage("right", false);
+  });
+}
+
+async function renderCompareImage(side, doc, token) {
+  const root = $(`#image-compare [data-side="${side}"]`);
+  if (!root) return;
+  const surface = root.querySelector(".image-surface");
+  if (doc.kind === "heic" || doc.kind === "image") {
+    surface.querySelector("img").src = doc.url;
+    return;
+  }
+  let image;
+  if (doc.kind === "yuv") {
+    const config = doc.config;
+    const raw = new Uint8Array(await window.desktop.readSlice(doc.file.path, (config.dataOffset || 0) + doc.frame * config.frameBytes, config.frameBytes));
+    if (token !== state.compareRenderToken) return;
+    image = M.renderYuv(raw, config.width, config.height, config.format);
+  } else {
+    image = R.render(doc.values, doc.config, doc.mode, doc.levels, doc.autoStretch, doc.blackLevel, doc.gain);
+  }
+  const canvas = surface.querySelector("canvas");
+  const size = compareDocSize(doc);
+  canvas.width = size.width;
+  canvas.height = size.height;
+  canvas.getContext("2d", { alpha: false }).putImageData(image, 0, 0);
+}
+
+function compareElements(side) {
+  const root = $(`#image-compare [data-side="${side}"]`);
+  const stage = root?.querySelector(".compare-stage");
+  return { root, stage, surface: stage?.querySelector(".image-surface") };
+}
+
+function compareCenter(side, zoom) {
+  const doc = compareDoc(side);
+  const { stage, surface } = compareElements(side);
+  if (!doc || !stage || !surface) return { x: 0.5, y: 0.5 };
+  const size = compareDocSize(doc);
+  return {
+    x: Math.max(0, Math.min(1, (stage.scrollLeft + stage.clientWidth / 2 - surface.offsetLeft) / Math.max(0.1, zoom) / size.width)),
+    y: Math.max(0, Math.min(1, (stage.scrollTop + stage.clientHeight / 2 - surface.offsetTop) / Math.max(0.1, zoom) / size.height))
+  };
+}
+
+function applyCompareView(side, center) {
+  const doc = compareDoc(side);
+  const view = state.compareViews[side];
+  const { root, stage, surface } = compareElements(side);
+  if (!doc || !view || !root || !stage || !surface) return;
+  const size = compareDocSize(doc);
+  surface.style.width = `${Math.max(1, Math.round(size.width * view.zoom))}px`;
+  surface.style.height = `${Math.max(1, Math.round(size.height * view.zoom))}px`;
+  root.querySelector(".compare-zoom-value").textContent = `${Math.round(view.zoom * 100)}%`;
+  if (center) requestAnimationFrame(() => {
+    stage.scrollLeft = surface.offsetLeft + center.x * size.width * view.zoom - stage.clientWidth / 2;
+    stage.scrollTop = surface.offsetTop + center.y * size.height * view.zoom - stage.clientHeight / 2;
+  });
+}
+
+function setCompareZoom(side, zoom, anchor, sync = true) {
+  const { stage, surface } = compareElements(side);
+  const doc = compareDoc(side);
+  if (!stage || !surface || !doc) return;
+  const previous = state.compareViews[side]?.zoom || 1;
+  const bounds = stage.getBoundingClientRect();
+  const viewportX = (anchor?.x ?? bounds.left + stage.clientWidth / 2) - bounds.left;
+  const viewportY = (anchor?.y ?? bounds.top + stage.clientHeight / 2) - bounds.top;
+  const size = compareDocSize(doc);
+  const center = {
+    x: Math.max(0, Math.min(1, (stage.scrollLeft + viewportX - surface.offsetLeft) / previous / size.width)),
+    y: Math.max(0, Math.min(1, (stage.scrollTop + viewportY - surface.offsetTop) / previous / size.height))
+  };
+  state.compareViews[side] = { zoom: Math.max(0.1, Math.min(16, zoom)), fitMode: false };
+  applyCompareView(side, center);
+  if (sync && state.syncView) {
+    const other = side === "left" ? "right" : "left";
+    state.compareViews[other] = { zoom: state.compareViews[side].zoom, fitMode: false };
+    applyCompareView(other, center);
+  }
+}
+
+function fitCompareImage(side, sync = true) {
+  const doc = compareDoc(side);
+  const { stage } = compareElements(side);
+  if (!doc || !stage) return;
+  const size = compareDocSize(doc);
+  const style = getComputedStyle(stage);
+  const width = Math.max(1, stage.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight));
+  const height = Math.max(1, stage.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom));
+  state.compareViews[side] = { zoom: Math.max(0.1, Math.min(16, width / size.width, height / size.height)), fitMode: true };
+  applyCompareView(side, { x: 0.5, y: 0.5 });
+  if (sync && state.syncView) fitCompareImage(side === "left" ? "right" : "left", false);
+}
+
+function syncComparePan(source) {
+  if (!state.syncView) return;
+  const view = state.compareViews[source];
+  if (!view) return;
+  const center = compareCenter(source, view.zoom);
+  const other = source === "left" ? "right" : "left";
+  state.compareViews[other] = { zoom: view.zoom, fitMode: false };
+  applyCompareView(other, center);
+}
+
+function bindCompareImageControls(side) {
+  const { root, stage, surface } = compareElements(side);
+  if (!root || !stage || !surface) return;
+  root.querySelectorAll(".zoom-toolbar button").forEach((button) => button.addEventListener("click", async () => {
+    const action = button.dataset.action;
+    const zoom = state.compareViews[side]?.zoom || 1;
+    if (action === "in") setCompareZoom(side, zoom * 1.25);
+    else if (action === "out") setCompareZoom(side, zoom / 1.25);
+    else if (action === "reset") setCompareZoom(side, 1);
+    else if (action === "fit") fitCompareImage(side);
+    else if (action === "fullscreen") {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await root.querySelector(".image-viewer-panel").requestFullscreen();
+    }
+  }));
+  stage.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    setCompareZoom(side, (state.compareViews[side]?.zoom || 1) * (event.deltaY < 0 ? 1.12 : 1 / 1.12), { x: event.clientX, y: event.clientY });
+  }, { passive: false });
+  let drag;
+  stage.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 && event.button !== 1) return;
+    drag = { x: event.clientX, y: event.clientY, left: stage.scrollLeft, top: stage.scrollTop };
+    stage.setPointerCapture(event.pointerId);
+    stage.classList.add("panning");
+    event.preventDefault();
+  });
+  stage.addEventListener("pointermove", (event) => {
+    if (drag) {
+      stage.scrollLeft = drag.left - (event.clientX - drag.x);
+      stage.scrollTop = drag.top - (event.clientY - drag.y);
+      syncComparePan(side);
+      return;
+    }
+    const doc = compareDoc(side);
+    if (!doc) return;
+    const bounds = surface.getBoundingClientRect();
+    const size = compareDocSize(doc);
+    const x = Math.floor((event.clientX - bounds.left) / Math.max(1, bounds.width) * size.width);
+    const y = Math.floor((event.clientY - bounds.top) / Math.max(1, bounds.height) * size.height);
+    if (x >= 0 && y >= 0 && x < size.width && y < size.height) {
+      root.querySelector(".viewer-status").textContent = `${size.width}×${size.height} | ${compareFormat(doc)} | X:${x} Y:${y}`;
+    }
+  });
+  const stop = () => {
+    drag = null;
+    stage.classList.remove("panning");
+  };
+  stage.addEventListener("pointerup", stop);
+  stage.addEventListener("pointercancel", stop);
+  new ResizeObserver(() => {
+    if (state.compareViews[side]?.fitMode) fitCompareImage(side, false);
+  }).observe(stage);
+}
+
 function notice(message, type = "working", stream = false) {
   const element = stream ? $("#stream-notice") : $("#notice");
   element.textContent = message;
@@ -824,23 +1178,187 @@ function notice(message, type = "working", stream = false) {
   show(element, Boolean(message));
 }
 
-async function openStream(file, kind) {
-  resetPlayback();
-  state.streamFile = file;
-  $("#stream-summary").innerHTML = fileMarkup(file, kind === "h264" ? "H.264 / AVC" : "H.265 / HEVC");
-  notice("正在读取与分析码流…", "working", true);
+async function createStreamDocument(file, kind) {
+  notice(`正在分析 ${file.name}…`, "working", true);
   const analysis = await window.desktop.probeStream(file.path, kind);
-  state.stream.analysis = analysis;
+  const doc = {
+    id: file.id,
+    kind,
+    file,
+    analysis,
+    fps: parseRate(analysis.rate) || 25,
+    decoder: "检测中",
+    hardware: false,
+    proxyUrl: "",
+    proxyError: ""
+  };
+  try {
+    const result = await window.desktop.createProxy(file.path, kind, doc.fps);
+    doc.proxyUrl = typeof result === "string" ? result : result.url;
+    doc.decoder = typeof result === "string" ? "Software Decode" : result.decoder;
+    doc.hardware = Boolean(result.hardware);
+  } catch (error) {
+    doc.decoder = "仅分析";
+    doc.proxyError = error.message;
+  }
+  notice("", "working", true);
+  return doc;
+}
+
+function activateStreamDocument(doc) {
+  if (!doc) return;
+  resetPlayback();
+  state.activeStreamId = doc.id;
+  state.streamFile = doc.file;
+  state.stream.analysis = doc.analysis;
   state.stream.page = 0;
   state.stream.currentFrame = 0;
-  state.stream.decoder = "检测中";
-  state.stream.fps = parseRate(analysis.rate) || 25;
+  state.stream.decoder = doc.decoder;
+  state.stream.fps = doc.fps;
+  $("#stream-summary").innerHTML = fileMarkup(doc.file, doc.kind === "h264" ? "H.264 / AVC" : "H.265 / HEVC");
   renderStreamSummary();
   renderFrameChart();
   renderFrameTable();
   updateCurrentFrameUi();
-  notice("", "working", true);
-  prepareProxy(file, kind);
+  const video = $("#stream-video");
+  const placeholder = $("#video-placeholder");
+  if (doc.proxyUrl) {
+    video.src = doc.proxyUrl;
+    video.load();
+    $("#proxy-status").textContent = `${doc.kind.toUpperCase()} | ${doc.analysis.width || "—"}×${doc.analysis.height || "—"} | ${doc.decoder}`;
+    $("#play-badge").textContent = doc.hardware ? "GPU 硬解" : "软件解码";
+    $("#play-badge").className = `badge ready ${doc.hardware ? "hardware" : "software"}`;
+    show(placeholder, false);
+  } else {
+    $("#proxy-status").textContent = "播放代理生成失败";
+    $("#play-badge").textContent = "仅分析";
+    $("#play-badge").className = "badge error";
+    placeholder.innerHTML = `<b>逐帧分析仍可使用</b><span>${escapeHtml(doc.proxyError || "无法生成播放代理")}</span>`;
+    show(placeholder, true);
+  }
+  renderStreamTabs();
+}
+
+function renderStreamTabs() {
+  const element = $("#stream-file-tabs");
+  if (!state.streams.length) { show(element, false); return; }
+  show(element, true);
+  element.innerHTML = `<h2>视频文件</h2><div class="stream-tab-list">${state.streams.map((doc, index) => `
+    <div class="stream-tab-row ${doc.id === state.activeStreamId ? "active" : ""}" data-id="${escapeHtml(doc.id)}">
+      <button class="stream-select"><b>${String(index + 1).padStart(2, "0")}</b><span title="${escapeHtml(doc.file.name)}">${escapeHtml(doc.file.name)}</span><em>${doc.kind.toUpperCase()}</em></button>
+      <div class="side-assign"><button data-side="left" class="${doc.id === state.leftId ? "selected" : ""}">Left</button><button data-side="right" class="${doc.id === state.rightId ? "selected" : ""}">Right</button></div>
+    </div>`).join("")}<button id="add-stream-file" class="add-file-tab">＋ 追加 H.264/H.265</button></div>`;
+  $$("#stream-file-tabs .stream-select").forEach((button) => button.addEventListener("click", () => {
+    const doc = state.streams.find((item) => item.id === button.closest(".stream-tab-row").dataset.id);
+    activateStreamDocument(doc);
+  }));
+  $$("#stream-file-tabs .side-assign button").forEach((button) => button.addEventListener("click", () => {
+    const id = button.closest(".stream-tab-row").dataset.id;
+    if (button.dataset.side === "left") state.leftId = id;
+    else state.rightId = id;
+    renderStreamTabs();
+    if (state.compareMode) renderStreamCompare();
+  }));
+  $("#add-stream-file").addEventListener("click", async () => receiveInfos(await window.desktop.selectFiles()));
+}
+
+function streamCompareDoc(side) {
+  const id = side === "left" ? state.leftId : state.rightId;
+  return state.streams.find((doc) => doc.id === id);
+}
+
+function renderStreamCompare() {
+  const container = $("#stream-compare");
+  const enabled = state.compareMode && state.streams.length >= 2;
+  show(container, enabled);
+  if (!enabled) return;
+  ensureCompareSelection(state.streams);
+  const left = streamCompareDoc("left");
+  const right = streamCompareDoc("right");
+  if (!left || !right) return;
+  const cards = [["left", "Left", left], ["right", "Right", right]].map(([side, label, doc]) => {
+    const count = doc.analysis.frames.length;
+    const badge = doc.hardware ? "GPU 硬解" : doc.proxyUrl ? "软件解码" : "仅分析";
+    return `<section class="panel compare-video-card" data-side="${side}">
+      <div class="compare-side-label"><b>${label}</b><span title="${escapeHtml(doc.file.name)}">${escapeHtml(doc.file.name)}</span><em>${doc.kind.toUpperCase()} · ${escapeHtml(doc.decoder)}</em></div>
+      <div class="canvas-stage compare-video-stage"><video controls ${doc.proxyUrl ? `src="${escapeHtml(doc.proxyUrl)}"` : ""}></video><div class="current-frame-badge"><span>当前帧</span><strong>#0</strong><em>—</em></div>${doc.proxyUrl ? "" : `<div class="placeholder"><b>逐帧分析仍可使用</b><span>${escapeHtml(doc.proxyError || "播放代理不可用")}</span></div>`}</div>
+      <div class="compare-transport"><button data-action="prev">|←</button><button data-action="toggle">▶</button><button data-action="next">→|</button><span>00:00.000</span><input type="range" min="0" max="${Math.max(0, count - 1)}" value="0" /></div>
+      <div class="compare-video-meta">${doc.analysis.width || "—"}×${doc.analysis.height || "—"} · ${count.toLocaleString("zh-CN")} 帧 · ${badge}</div>
+    </section>`;
+  }).join("");
+  container.innerHTML = `<div class="compare-toolbar panel"><strong>Compare 视频对比</strong><button id="play-both" class="primary">▶ Play Both</button><button id="pause-both">Ⅱ Pause Both</button><label><input id="sync-playback" type="checkbox" ${state.syncPlayback ? "checked" : ""}/> Sync Playback</label><span>时间偏差超过 100 ms 时轻量纠偏</span></div><div class="compare-grid video-compare-grid">${cards}</div>`;
+  $("#sync-playback").addEventListener("change", (event) => { state.syncPlayback = event.target.checked; });
+  $("#play-both").addEventListener("click", () => {
+    const videos = $$("#stream-compare video");
+    videos.forEach((video) => video.play().catch(() => undefined));
+  });
+  $("#pause-both").addEventListener("click", () => $$("#stream-compare video").forEach((video) => video.pause()));
+  bindCompareVideo("left", left);
+  bindCompareVideo("right", right);
+}
+
+function bindCompareVideo(side, doc) {
+  const root = $(`#stream-compare [data-side="${side}"]`);
+  const video = root?.querySelector("video");
+  if (!root || !video) return;
+  const slider = root.querySelector('input[type="range"]');
+  const toggle = root.querySelector('[data-action="toggle"]');
+  const update = () => {
+    const frame = Math.max(0, Math.min(doc.analysis.frames.length - 1, Math.round(video.currentTime * doc.fps)));
+    const data = doc.analysis.frames[frame];
+    slider.value = frame;
+    root.querySelector(".compare-transport span").textContent = M.formatTime(frame / doc.fps);
+    root.querySelector(".current-frame-badge strong").textContent = `#${frame}`;
+    root.querySelector(".current-frame-badge em").textContent = data ? `${data.type} · ${M.formatBytes(data.size)}` : "—";
+    toggle.textContent = video.paused ? "▶" : "Ⅱ";
+    if (!state.syncPlayback || state.compareSyncGuard || video.paused) return;
+    const otherSide = side === "left" ? "right" : "left";
+    const other = $(`#stream-compare [data-side="${otherSide}"] video`);
+    if (other && !other.paused && Math.abs(other.currentTime - video.currentTime) > 0.1) {
+      state.compareSyncGuard = true;
+      other.currentTime = Math.min(video.currentTime, Number.isFinite(other.duration) ? other.duration : video.currentTime);
+      queueMicrotask(() => { state.compareSyncGuard = false; });
+    }
+  };
+  video.addEventListener("timeupdate", update);
+  video.addEventListener("play", update);
+  video.addEventListener("pause", update);
+  toggle.addEventListener("click", () => video.paused ? video.play().catch(() => undefined) : video.pause());
+  root.querySelector('[data-action="prev"]').addEventListener("click", () => stepCompareVideo(side, -1));
+  root.querySelector('[data-action="next"]').addEventListener("click", () => stepCompareVideo(side, 1));
+  slider.addEventListener("input", () => seekCompareVideo(side, Number(slider.value) / doc.fps, true));
+}
+
+function seekCompareVideo(side, seconds, sync) {
+  const video = $(`#stream-compare [data-side="${side}"] video`);
+  if (!video) return;
+  video.pause();
+  video.currentTime = Math.max(0, seconds);
+  if (sync && state.syncPlayback && !state.compareSyncGuard) {
+    state.compareSyncGuard = true;
+    const other = side === "left" ? "right" : "left";
+    const otherVideo = $(`#stream-compare [data-side="${other}"] video`);
+    if (otherVideo) {
+      otherVideo.pause();
+      otherVideo.currentTime = Math.max(0, seconds);
+    }
+    queueMicrotask(() => { state.compareSyncGuard = false; });
+  }
+}
+
+function stepCompareVideo(side, delta) {
+  const doc = streamCompareDoc(side);
+  const video = $(`#stream-compare [data-side="${side}"] video`);
+  if (!doc || !video) return;
+  seekCompareVideo(side, video.currentTime + delta / doc.fps, false);
+  if (state.syncPlayback) {
+    const other = side === "left" ? "right" : "left";
+    const otherDoc = streamCompareDoc(other);
+    if (otherDoc && Math.abs(otherDoc.fps - doc.fps) < 0.01) {
+      const otherVideo = $(`#stream-compare [data-side="${other}"] video`);
+      if (otherVideo) seekCompareVideo(other, otherVideo.currentTime + delta / otherDoc.fps, false);
+    }
+  }
 }
 
 function parseRate(rate) {

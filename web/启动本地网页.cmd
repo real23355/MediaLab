@@ -6,6 +6,6 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-echo 正在启动 MediaLab V0.0.5 本地网页...
+echo 正在启动 MediaLab V0.0.6 本地网页...
 pnpm run dev
 pause

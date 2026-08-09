@@ -15,9 +15,11 @@
       <button id="brand-home" class="brand brand-button">
         <span class="brand-mark"><i></i><i></i><i></i></span>
         <span>MediaLab——视频码流与图像分析工具</span>
-        <b>V0.0.5</b>
+        <b>V0.0.6</b>
       </button>
       <div class="topbar-actions">
+        <button id="add-file" class="ghost hidden">＋ 追加文件</button>
+        <button id="compare-mode" class="ghost hidden">Compare</button>
         <button id="new-file" class="ghost hidden">返回首页</button>
         <button id="restart-app" class="ghost hidden">重启应用</button>
       </div>
@@ -28,7 +30,7 @@
         <div class="hero">
           <h1>MediaLab<br /><em>视频码流与图像分析工具</em></h1>
           <p class="lead">
-            支持 YUV / SYUV、Bayer RAW、HEIC 与 H.264 / H.265 裸码流。图像可批量解析，
+            支持 YUV / SYUV、Bayer RAW、HEIC、RGB 图片与 H.264 / H.265 裸码流。图像可批量解析，
             码流可播放并逐帧诊断。
           </p>
           <div class="feature-row">
@@ -40,7 +42,7 @@
         <div id="drop-zone" class="drop-zone">
           <div class="drop-icon"><span></span><b>+</b></div>
           <h2>拖入媒体文件</h2>
-          <p>YUV / SYUV · Bayer RAW · HEIC · H.264 · H.265</p>
+          <p>YUV / SYUV · Bayer RAW · HEIC / RGB 图片 · H.264 · H.265</p>
           <button id="browse" class="primary">选择文件</button>
           <small>YUV / RAW / HEIC 可多选（最多 10 个）；H.264 / H.265 每次仅 1 个</small>
         </div>
@@ -61,6 +63,7 @@
           <div class="image-content">
             <div id="file-summary" class="file-summary"></div>
             <div id="notice" class="notice hidden"></div>
+            <div id="image-compare" class="compare-content hidden"></div>
 
             <div id="yuv-workspace" class="hidden">
               <div class="workspace-grid">
@@ -183,6 +186,8 @@
           <div id="stream-summary" class="file-summary"></div>
           <div id="stream-notice" class="notice hidden"></div>
           <div id="stream-metrics" class="metrics"></div>
+          <div id="stream-file-tabs" class="stream-file-tabs panel"></div>
+          <div id="stream-compare" class="compare-content hidden"></div>
           <div class="stream-grid">
             <section class="panel viewer">
               <div class="viewer-head">

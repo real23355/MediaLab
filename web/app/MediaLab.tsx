@@ -35,8 +35,10 @@ import {
   type PointerEvent,
   type ReactNode,
   type WheelEvent,
+  forwardRef,
   useCallback,
   useEffect,
+  useImperativeHandle,
   useMemo,
   useRef,
   useState,
@@ -53,9 +55,10 @@ declare global {
   }
 }
 
-const VERSION = "V0.0.5";
+const VERSION = "V0.0.6";
 const PAGE_SIZE = 100;
 const IMAGE_LIMIT = 10;
+const TOTAL_FILE_LIMIT = Math.floor(4.2 * 1024 * 1024 * 1024);
 
 const KIND_OPTIONS: Array<{
   value: MediaKind;
@@ -65,6 +68,7 @@ const KIND_OPTIONS: Array<{
   { value: "yuv", label: "YUV 原始图像", extension: ".yuv / .syuv" },
   { value: "raw", label: "Bayer RAW 图像", extension: ".raw" },
   { value: "heic", label: "HEIC 图片", extension: ".heic / .heif" },
+  { value: "image", label: "RGB / 普通图片", extension: ".png / .jpg / .bmp / .webp" },
   { value: "h264", label: "H.264 裸码流", extension: ".264 / .h264 / .avc" },
   { value: "h265", label: "H.265 裸码流", extension: ".265 / .h265 / .hevc" },
 ];
@@ -88,7 +92,7 @@ type YuvDocument = {
 
 type HeicDocument = {
   id: string;
-  kind: "heic";
+  kind: "heic" | "image";
   file: File;
   url: string;
   width: number;
@@ -110,6 +114,34 @@ type RawDocument = {
 };
 
 type ImageDocument = YuvDocument | RawDocument | HeicDocument;
+
+type StreamDocument = {
+  id: string;
+  kind: "h264" | "h265";
+  file: File;
+  bytes: Uint8Array;
+  analysis: StreamAnalysis;
+  fps: number;
+};
+
+type ViewSyncState = {
+  zoom: number;
+  centerX: number;
+  centerY: number;
+  mode: "manual" | "fit";
+  sourceId: string;
+  revision: number;
+};
+
+type CompareStreamHandle = {
+  play: () => void;
+  pause: () => void;
+  seekTime: (seconds: number) => void;
+  step: (delta: number) => void;
+  currentTime: () => number;
+};
+
+const isVideoKind = (kind: MediaKind) => kind === "h264" || kind === "h265";
 
 function uid(file: File, index = 0) {
   return `${file.name}-${file.size}-${file.lastModified}-${index}`;
@@ -169,6 +201,14 @@ export default function MediaLab() {
   const [pendingItems, setPendingItems] = useState<PendingItem[]>([]);
   const [imageDocs, setImageDocs] = useState<ImageDocument[]>([]);
   const [activeDocId, setActiveDocId] = useState("");
+  const [streamDocs, setStreamDocs] = useState<StreamDocument[]>([]);
+  const [activeStreamId, setActiveStreamId] = useState("");
+  const [compareMode, setCompareMode] = useState(false);
+  const [leftId, setLeftId] = useState("");
+  const [rightId, setRightId] = useState("");
+  const [syncView, setSyncView] = useState(true);
+  const [syncPlayback, setSyncPlayback] = useState(true);
+  const [viewSyncState, setViewSyncState] = useState<ViewSyncState | null>(null);
   const [streamFile, setStreamFile] = useState<File | null>(null);
   const [streamBytes, setStreamBytes] = useState<Uint8Array | null>(null);
   const [stream, setStream] = useState<StreamAnalysis | null>(null);
@@ -184,6 +224,34 @@ export default function MediaLab() {
   const [error, setError] = useState("");
 
   const activeDoc = imageDocs.find((doc) => doc.id === activeDocId) ?? imageDocs[0];
+  const activeStreamDoc = streamDocs.find((doc) => doc.id === activeStreamId) ?? streamDocs[0];
+  const workspaceKind = imageDocs.length ? "image" : streamDocs.length ? "video" : null;
+  const leftImage = imageDocs.find((doc) => doc.id === leftId) ?? imageDocs[0];
+  const rightImage = imageDocs.find((doc) => doc.id === rightId) ?? imageDocs[1];
+  const leftStream = streamDocs.find((doc) => doc.id === leftId) ?? streamDocs[0];
+  const rightStream = streamDocs.find((doc) => doc.id === rightId) ?? streamDocs[1];
+  const leftVideoRef = useRef<CompareStreamHandle>(null);
+  const rightVideoRef = useRef<CompareStreamHandle>(null);
+
+  useEffect(() => {
+    const docs = imageDocs.length ? imageDocs : streamDocs;
+    if (!docs.length) return;
+    if (!docs.some((doc) => doc.id === leftId)) setLeftId(docs[0].id);
+    if (!docs.some((doc) => doc.id === rightId) || (docs.length > 1 && rightId === leftId)) {
+      setRightId(docs[1]?.id ?? docs[0].id);
+    }
+  }, [imageDocs, leftId, rightId, streamDocs]);
+
+  useEffect(() => {
+    if (!compareMode || !syncPlayback || workspaceKind !== "video") return;
+    const timer = setInterval(() => {
+      const leftTime = leftVideoRef.current?.currentTime();
+      const rightTime = rightVideoRef.current?.currentTime();
+      if (leftTime == null || rightTime == null) return;
+      if (Math.abs(leftTime - rightTime) > 0.1) rightVideoRef.current?.seekTime(leftTime);
+    }, 750);
+    return () => clearInterval(timer);
+  }, [compareMode, syncPlayback, workspaceKind]);
 
   const stopStreamPlayback = useCallback(() => {
     if (playbackTimer.current) clearInterval(playbackTimer.current);
@@ -198,14 +266,31 @@ export default function MediaLab() {
     setStreamPlaying(false);
   }, []);
 
+  const activateStream = useCallback((doc: StreamDocument) => {
+    stopStreamPlayback();
+    setActiveStreamId(doc.id);
+    setStreamFile(doc.file);
+    setStreamBytes(doc.bytes);
+    setStream(doc.analysis);
+    setStreamFps(doc.fps);
+    setStreamFrame(0);
+    setTablePage(0);
+  }, [stopStreamPlayback]);
+
   const returnHome = useCallback(() => {
     stopStreamPlayback();
     imageDocs.forEach((doc) => {
-      if (doc.kind === "heic") URL.revokeObjectURL(doc.url);
+      if (doc.kind === "heic" || doc.kind === "image") URL.revokeObjectURL(doc.url);
     });
     setPendingItems([]);
     setImageDocs([]);
     setActiveDocId("");
+    setStreamDocs([]);
+    setActiveStreamId("");
+    setCompareMode(false);
+    setLeftId("");
+    setRightId("");
+    setViewSyncState(null);
     setStreamFile(null);
     setStreamBytes(null);
     setStream(null);
@@ -218,18 +303,50 @@ export default function MediaLab() {
 
   const receiveFiles = (incoming: File[]) => {
     if (!incoming.length) return;
-    returnHome();
-    const accepted = incoming.slice(0, IMAGE_LIMIT);
-    if (incoming.length > IMAGE_LIMIT) {
-      setError(`YUV / RAW / HEIC 一次最多选择 ${IMAGE_LIMIT} 个文件，已保留前 ${IMAGE_LIMIT} 个。`);
+    const detected = incoming.map((file) => ({ file, kind: detectKind(file) }));
+    const incomingMajor = isVideoKind(detected[0].kind) ? "video" : "image";
+    if (detected.some((item) => (isVideoKind(item.kind) ? "video" : "image") !== incomingMajor)) {
+      setError("请不要同时拖入图片与视频；请先建立一种媒体类型的工作区。");
+      return;
     }
-    setPendingItems(
-      accepted.map((file, index) => ({
-        id: uid(file, index),
-        file,
-        kind: detectKind(file),
+    if (workspaceKind && workspaceKind !== incomingMajor) {
+      setError(workspaceKind === "image"
+        ? "当前工作区为图片对比模式，只能添加图片类文件"
+        : "当前工作区为视频对比模式，只能添加 H.264/H.265 视频文件");
+      return;
+    }
+    const known = new Set([
+      ...pendingItems.map((item) => uid(item.file)),
+      ...imageDocs.map((doc) => uid(doc.file)),
+      ...streamDocs.map((doc) => uid(doc.file)),
+    ]);
+    let accepted = detected.filter((item) => !known.has(uid(item.file)));
+    if (!accepted.length) {
+      setError("这些文件已经在当前工作区中。");
+      return;
+    }
+    if (incomingMajor === "image") {
+      const remaining = Math.max(0, IMAGE_LIMIT - imageDocs.length - pendingItems.length);
+      if (accepted.length > remaining) {
+        setError(`图片类文件最多 ${IMAGE_LIMIT} 个，已保留可加入的前 ${remaining} 个。`);
+        accepted = accepted.slice(0, remaining);
+      }
+    }
+    const existingBytes = [...imageDocs, ...streamDocs].reduce((sum, doc) => sum + doc.file.size, 0)
+      + pendingItems.reduce((sum, item) => sum + item.file.size, 0);
+    const acceptedBytes = accepted.reduce((sum, item) => sum + item.file.size, 0);
+    if (existingBytes + acceptedBytes > TOTAL_FILE_LIMIT) {
+      setError("加入后文件总量将超过 4.2 GB 限制，请减少文件数量。");
+      return;
+    }
+    setPendingItems((items) => [
+      ...items,
+      ...accepted.map((item, index) => ({
+        id: `${uid(item.file, index)}-${Date.now()}-${index}`,
+        file: item.file,
+        kind: item.kind,
       })),
-    );
+    ]);
   };
 
   const onDrop = (event: DragEvent<HTMLDivElement>) => {
@@ -248,11 +365,18 @@ export default function MediaLab() {
     const streamItems = pendingItems.filter(
       (item) => item.kind === "h264" || item.kind === "h265",
     );
-    if (streamItems.length && pendingItems.length !== 1) {
-      setError("H.264 / H.265 当前一次只支持解析一个文件；请返回首页后单独选择该码流。");
+    const pendingMajor = streamItems.length ? "video" : "image";
+    if (streamItems.length !== 0 && streamItems.length !== pendingItems.length) {
+      setError("同一批次不能混合图片与视频文件。");
       return;
     }
-    if (!streamItems.length && pendingItems.length > IMAGE_LIMIT) {
+    if (workspaceKind && workspaceKind !== pendingMajor) {
+      setError(workspaceKind === "image"
+        ? "当前工作区为图片对比模式，只能添加图片类文件"
+        : "当前工作区为视频对比模式，只能添加 H.264/H.265 视频文件");
+      return;
+    }
+    if (!streamItems.length && imageDocs.length + pendingItems.length > IMAGE_LIMIT) {
       setError(`YUV / RAW / HEIC 一次最多解析 ${IMAGE_LIMIT} 个文件。`);
       return;
     }
@@ -260,14 +384,24 @@ export default function MediaLab() {
     setBusy(true);
     setError("");
     try {
-      if (streamItems[0]) {
-        const item = streamItems[0];
-        const data = new Uint8Array(await item.file.arrayBuffer());
-        setStreamFile(item.file);
-        setStreamBytes(data);
-        setStream(analyzeStream(data, item.kind as "h264" | "h265"));
-        setStreamFrame(0);
-        setTablePage(0);
+      if (streamItems.length) {
+        const docs: StreamDocument[] = [];
+        for (const item of streamItems) {
+          const data = new Uint8Array(await item.file.arrayBuffer());
+          const analysis = analyzeStream(data, item.kind as "h264" | "h265");
+          docs.push({
+            id: item.id,
+            kind: item.kind as "h264" | "h265",
+            file: item.file,
+            bytes: data,
+            analysis,
+            fps: 25,
+          });
+        }
+        setStreamDocs((current) => [...current, ...docs]);
+        activateStream(docs[0]);
+        setLeftId((value) => value || streamDocs[0]?.id || docs[0]?.id || "");
+        setRightId((value) => value || streamDocs[1]?.id || docs[1]?.id || docs[0]?.id || "");
         setPendingItems([]);
         return;
       }
@@ -319,7 +453,7 @@ export default function MediaLab() {
             blackLevel: 0,
             gain: 1,
           });
-        } else {
+        } else if (item.kind === "heic") {
           const bytes = new Uint8Array(await item.file.arrayBuffer());
           let blob: Blob;
           let decodedSize: { width: number; height: number } | undefined;
@@ -356,10 +490,16 @@ export default function MediaLab() {
             url,
             ...size,
           });
+        } else {
+          const url = URL.createObjectURL(item.file);
+          const size = await loadImageSize(url);
+          docs.push({ id: item.id, kind: "image", file: item.file, url, ...size });
         }
       }
-      setImageDocs(docs);
+      setImageDocs((current) => [...current, ...docs]);
       setActiveDocId(docs[0]?.id ?? "");
+      setLeftId((value) => value || imageDocs[0]?.id || docs[0]?.id || "");
+      setRightId((value) => value || imageDocs[1]?.id || docs[1]?.id || docs[0]?.id || "");
       setPendingItems([]);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "文件解析失败");
@@ -648,7 +788,8 @@ export default function MediaLab() {
   const maxChartSize = stream?.maxFrameSize || 1;
   const selectedFrame = stream?.frames[streamFrame];
   const yTicks = [1, 0.75, 0.5, 0.25, 0];
-  const hasContent = pendingItems.length > 0 || imageDocs.length > 0 || Boolean(stream);
+  const compareCount = workspaceKind === "image" ? imageDocs.length : streamDocs.length;
+  const hasContent = pendingItems.length > 0 || imageDocs.length > 0 || streamDocs.length > 0 || Boolean(stream);
 
   return (
     <main>
@@ -658,11 +799,15 @@ export default function MediaLab() {
           <span>MediaLab——视频码流与图像分析工具</span>
           <b>{VERSION}</b>
         </button>
-        {hasContent && (
-          <button className="button subtle" type="button" onClick={returnHome}>
-            返回首页
-          </button>
-        )}
+        {hasContent && <div className="topbar-actions">
+          {workspaceKind && <button className="button subtle" type="button" onClick={() => fileInput.current?.click()}>
+            ＋ 追加文件
+          </button>}
+          {compareCount >= 2 && <button className={`button ${compareMode ? "primary" : "subtle"}`} type="button" onClick={() => setCompareMode((value) => !value)}>
+            {compareMode ? "退出 Compare" : "Compare"}
+          </button>}
+          <button className="button subtle" type="button" onClick={returnHome}>返回首页</button>
+        </div>}
       </header>
 
       {!hasContent && (
@@ -670,7 +815,7 @@ export default function MediaLab() {
           <div className="hero-copy">
             <h1>MediaLab<br /><span>视频码流与图像分析工具</span></h1>
             <p className="hero-description">
-              支持 YUV / SYUV、Bayer RAW、HEIC 与 H.264 / H.265 裸码流；图像可批量解析，
+              支持 YUV / SYUV、Bayer RAW、HEIC、RGB 图片与 H.264 / H.265 裸码流；图像可批量解析，
               码流可播放并逐帧诊断。
             </p>
             <div className="feature-row">
@@ -692,7 +837,7 @@ export default function MediaLab() {
         <section className="kind-picker shell">
           <div className="picker-copy">
             <h2>确认每个文件的解析方式</h2>
-            <p>类型选项位于文件名右侧。YUV / RAW / HEIC 最多 10 个，码流一次 1 个。</p>
+            <p>类型选项位于文件名右侧。图片最多 10 个；视频可追加多个；文件总量上限 4.2 GB。</p>
           </div>
           <div className="pending-list">
             {pendingItems.map((item, index) => (
@@ -732,13 +877,45 @@ export default function MediaLab() {
         </section>
       )}
 
-      {activeDoc && (
-        <section className="workspace shell image-workspace">
-          <FileTabs docs={imageDocs} activeId={activeDoc.id} onSelect={setActiveDocId} />
+      {imageDocs.length > 0 && (
+        <section className="workspace shell image-workspace" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
+          <FileTabs
+            docs={imageDocs}
+            activeId={activeDoc?.id ?? ""}
+            leftId={leftId}
+            rightId={rightId}
+            onSelect={setActiveDocId}
+            onLeft={setLeftId}
+            onRight={setRightId}
+            onAdd={() => fileInput.current?.click()}
+          />
+          {compareMode && leftImage && rightImage ? (
+            <div className="compare-content">
+              <div className="compare-toolbar panel">
+                <strong>Compare 图片对比</strong>
+                <label><input type="checkbox" checked={syncView} onChange={(event) => setSyncView(event.target.checked)} /> Sync View</label>
+                <span>{syncView ? "Zoom / Pan / Fit / 100% 联动" : "左右视图独立"}</span>
+              </div>
+              <div className="compare-grid image-compare-grid">
+                <CompareImageViewer
+                  side="Left"
+                  doc={leftImage}
+                  syncState={syncView ? viewSyncState : null}
+                  onViewChange={(next) => syncView && setViewSyncState(next)}
+                />
+                <CompareImageViewer
+                  side="Right"
+                  doc={rightImage}
+                  syncState={syncView ? viewSyncState : null}
+                  onViewChange={(next) => syncView && setViewSyncState(next)}
+                />
+              </div>
+            </div>
+          ) : activeDoc ? (
           <div className="image-content">
             <FileSummary
               file={activeDoc.file}
-              kind={activeDoc.kind === "yuv" ? "YUV / SYUV" : activeDoc.kind === "raw" ? "Bayer RAW" : "HEIC"}
+              kind={activeDoc.kind === "yuv" ? "YUV / SYUV" : activeDoc.kind === "raw" ? "Bayer RAW" : activeDoc.kind === "heic" ? "HEIC" : "RGB 图片"}
             />
             {activeDoc.kind === "yuv" ? (
               <YuvViewer
@@ -766,11 +943,52 @@ export default function MediaLab() {
               <HeicViewer doc={activeDoc} />
             )}
           </div>
+          ) : null}
         </section>
       )}
 
       {stream && streamFile && streamBytes && (
-        <section className="workspace shell">
+        <section className="workspace shell stream-workspace" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
+          <StreamTabs
+            docs={streamDocs}
+            activeId={activeStreamDoc?.id ?? ""}
+            leftId={leftId}
+            rightId={rightId}
+            onSelect={activateStream}
+            onLeft={setLeftId}
+            onRight={setRightId}
+            onAdd={() => fileInput.current?.click()}
+          />
+          {compareMode && leftStream && rightStream && <div className="compare-content video-compare-content">
+            <div className="compare-toolbar panel">
+              <strong>Compare 视频对比</strong>
+              <button type="button" className="button primary" onClick={() => {
+                leftVideoRef.current?.play();
+                rightVideoRef.current?.play();
+              }}>▶ Play Both</button>
+              <button type="button" className="button subtle" onClick={() => {
+                leftVideoRef.current?.pause();
+                rightVideoRef.current?.pause();
+              }}>Ⅱ Pause Both</button>
+              <label><input type="checkbox" checked={syncPlayback} onChange={(event) => setSyncPlayback(event.target.checked)} /> Sync Playback</label>
+            </div>
+            <div className="compare-grid video-compare-grid">
+              <CompareStreamViewer
+                ref={leftVideoRef}
+                side="Left"
+                doc={leftStream}
+                onSeek={(seconds) => syncPlayback && rightVideoRef.current?.seekTime(seconds)}
+                onStep={(delta) => syncPlayback && Math.abs(leftStream.fps - rightStream.fps) < 0.01 && rightVideoRef.current?.step(delta)}
+              />
+              <CompareStreamViewer
+                ref={rightVideoRef}
+                side="Right"
+                doc={rightStream}
+                onSeek={(seconds) => syncPlayback && leftVideoRef.current?.seekTime(seconds)}
+                onStep={(delta) => syncPlayback && Math.abs(leftStream.fps - rightStream.fps) < 0.01 && leftVideoRef.current?.step(delta)}
+              />
+            </div>
+          </div>}
           <FileSummary file={streamFile} kind={stream.codecLabel} />
           <div className="stream-stats">
             <Metric label="分辨率" value={stream.width ? `${stream.width} × ${stream.height}` : "未读出"} />
@@ -814,7 +1032,10 @@ export default function MediaLab() {
                 disabled={decoderSupport !== "supported"}
                 onToggle={() => streamPlaying ? stopStreamPlayback() : startStreamPlayback()}
                 onFrame={selectStreamFrame}
-                onFps={setStreamFps}
+                onFps={(fps) => {
+                  setStreamFps(fps);
+                  if (activeStreamDoc) setStreamDocs((docs) => docs.map((doc) => doc.id === activeStreamDoc.id ? { ...doc, fps } : doc));
+                }}
               />
             </div>
 
@@ -914,7 +1135,7 @@ export default function MediaLab() {
         className="visually-hidden"
         type="file"
         multiple
-        accept=".yuv,.raw,.syuv,.nv12,.nv21,.heic,.heif,.264,.h264,.avc,.265,.h265,.hevc,application/octet-stream,image/heic,image/heif"
+        accept=".yuv,.raw,.syuv,.nv12,.nv21,.heic,.heif,.png,.jpg,.jpeg,.bmp,.webp,.264,.h264,.avc,.265,.h265,.hevc,application/octet-stream,image/*"
         onChange={onPick}
       />
     </main>
@@ -924,29 +1145,68 @@ export default function MediaLab() {
 function FileTabs({
   docs,
   activeId,
+  leftId,
+  rightId,
   onSelect,
+  onLeft,
+  onRight,
+  onAdd,
 }: {
   docs: ImageDocument[];
   activeId: string;
+  leftId: string;
+  rightId: string;
   onSelect: (id: string) => void;
+  onLeft: (id: string) => void;
+  onRight: (id: string) => void;
+  onAdd: () => void;
 }) {
   return (
     <aside className="file-tabs" aria-label="已解析图片">
       <h2>已解析文件</h2>
-      {docs.map((doc, index) => (
-        <button
-          key={doc.id}
-          type="button"
-          className={doc.id === activeId ? "active" : ""}
-          onClick={() => onSelect(doc.id)}
-        >
+      {docs.map((doc, index) => <div className={`file-tab-row ${doc.id === activeId ? "active" : ""}`} key={doc.id}>
+        <button type="button" className="file-tab-main" onClick={() => onSelect(doc.id)}>
           <b>{String(index + 1).padStart(2, "0")}</b>
           <span title={doc.file.name}>{doc.file.name}</span>
-          <em>{doc.kind === "yuv" ? "YUV" : doc.kind === "raw" ? "RAW" : "HEIC"}</em>
+          <em>{doc.kind === "yuv" ? "YUV" : doc.kind === "raw" ? "RAW" : doc.kind === "heic" ? "HEIC" : "RGB"}</em>
         </button>
-      ))}
+        <div className="side-assign">
+          <button type="button" className={doc.id === leftId ? "selected" : ""} onClick={() => onLeft(doc.id)}>Left</button>
+          <button type="button" className={doc.id === rightId ? "selected" : ""} onClick={() => onRight(doc.id)}>Right</button>
+        </div>
+      </div>)}
+      <button type="button" className="add-file-tab" onClick={onAdd}>＋ 拖入或追加文件</button>
     </aside>
   );
+}
+
+function StreamTabs({
+  docs, activeId, leftId, rightId, onSelect, onLeft, onRight, onAdd,
+}: {
+  docs: StreamDocument[];
+  activeId: string;
+  leftId: string;
+  rightId: string;
+  onSelect: (doc: StreamDocument) => void;
+  onLeft: (id: string) => void;
+  onRight: (id: string) => void;
+  onAdd: () => void;
+}) {
+  return <aside className="stream-file-tabs panel" aria-label="已解析视频">
+    <h2>视频文件</h2>
+    <div className="stream-tab-list">
+      {docs.map((doc, index) => <div className={`stream-tab-row ${doc.id === activeId ? "active" : ""}`} key={doc.id}>
+        <button type="button" className="file-tab-main" onClick={() => onSelect(doc)}>
+          <b>{String(index + 1).padStart(2, "0")}</b><span title={doc.file.name}>{doc.file.name}</span><em>{doc.kind.toUpperCase()}</em>
+        </button>
+        <div className="side-assign">
+          <button type="button" className={doc.id === leftId ? "selected" : ""} onClick={() => onLeft(doc.id)}>Left</button>
+          <button type="button" className={doc.id === rightId ? "selected" : ""} onClick={() => onRight(doc.id)}>Right</button>
+        </div>
+      </div>)}
+      <button type="button" className="add-file-tab" onClick={onAdd}>＋ 追加 H.264/H.265</button>
+    </div>
+  </aside>;
 }
 
 function ZoomToolbar({
@@ -994,6 +1254,9 @@ function ImageViewport({
   children,
   onPixel,
   status,
+  viewerId,
+  syncState,
+  onViewChange,
 }: {
   title: string;
   detail: string;
@@ -1004,6 +1267,9 @@ function ImageViewport({
   children: ReactNode;
   onPixel?: (x: number, y: number) => void;
   status?: string;
+  viewerId?: string;
+  syncState?: ViewSyncState | null;
+  onViewChange?: (state: ViewSyncState) => void;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -1013,7 +1279,23 @@ function ImageViewport({
   const [fitMode, setFitMode] = useState(true);
   const fitModeRef = useRef(true);
   const [panning, setPanning] = useState(false);
-  const setZoom = useCallback((value: number, clientX?: number, clientY?: number) => {
+  const revisionRef = useRef(0);
+  const reportView = useCallback((nextZoom: number, mode: "manual" | "fit") => {
+    const stage = stageRef.current;
+    const surface = surfaceRef.current;
+    if (!stage || !surface || !viewerId || !onViewChange) return;
+    const centerImageX = (stage.scrollLeft + stage.clientWidth / 2 - surface.offsetLeft) / Math.max(0.1, nextZoom);
+    const centerImageY = (stage.scrollTop + stage.clientHeight / 2 - surface.offsetTop) / Math.max(0.1, nextZoom);
+    onViewChange({
+      zoom: nextZoom,
+      centerX: Math.max(0, Math.min(1, centerImageX / Math.max(1, width))),
+      centerY: Math.max(0, Math.min(1, centerImageY / Math.max(1, height))),
+      mode,
+      sourceId: viewerId,
+      revision: ++revisionRef.current,
+    });
+  }, [height, onViewChange, viewerId, width]);
+  const setZoom = useCallback((value: number, clientX?: number, clientY?: number, notify = true) => {
     const stage = stageRef.current;
     const surface = surfaceRef.current;
     const next = Math.max(0.1, Math.min(16, value));
@@ -1034,9 +1316,10 @@ function ImageViewport({
     requestAnimationFrame(() => {
       stage.scrollLeft = surface.offsetLeft + imageX * next - viewportX;
       stage.scrollTop = surface.offsetTop + imageY * next - viewportY;
+      if (notify) reportView(next, "manual");
     });
-  }, [zoom]);
-  const fit = useCallback(() => {
+  }, [reportView, zoom]);
+  const fit = useCallback((notify = true) => {
     const stage = stageRef.current;
     if (!stage) return;
     const style = getComputedStyle(stage);
@@ -1055,10 +1338,11 @@ function ImageViewport({
     requestAnimationFrame(() => {
       stage.scrollLeft = 0;
       stage.scrollTop = 0;
+      if (notify) reportView(next, "fit");
     });
-  }, [height, width]);
+  }, [height, reportView, width]);
   useEffect(() => {
-    const frame = requestAnimationFrame(fit);
+    const frame = requestAnimationFrame(() => fit(false));
     return () => cancelAnimationFrame(frame);
   }, [resetKey, fit]);
   useEffect(() => {
@@ -1069,7 +1353,7 @@ function ImageViewport({
       if (!fitModeRef.current) return;
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
-        if (fitModeRef.current) fit();
+        if (fitModeRef.current) fit(false);
       });
     });
     observer.observe(stage);
@@ -1078,6 +1362,23 @@ function ImageViewport({
       observer.disconnect();
     };
   }, [fit]);
+  useEffect(() => {
+    if (!syncState || !viewerId || syncState.sourceId === viewerId) return;
+    const stage = stageRef.current;
+    const surface = surfaceRef.current;
+    if (!stage || !surface) return;
+    if (syncState.mode === "fit") {
+      fit(false);
+      return;
+    }
+    fitModeRef.current = false;
+    setFitMode(false);
+    setZoomState(syncState.zoom);
+    requestAnimationFrame(() => {
+      stage.scrollLeft = surface.offsetLeft + syncState.centerX * width * syncState.zoom - stage.clientWidth / 2;
+      stage.scrollTop = surface.offsetTop + syncState.centerY * height * syncState.zoom - stage.clientHeight / 2;
+    });
+  }, [fit, height, syncState, viewerId, width]);
 
   const updatePixel = (event: PointerEvent<HTMLDivElement>) => {
     if (!onPixel || dragRef.current || !surfaceRef.current) return;
@@ -1128,6 +1429,7 @@ function ImageViewport({
           if (drag && stage) {
             stage.scrollLeft = drag.left - (event.clientX - drag.x);
             stage.scrollTop = drag.top - (event.clientY - drag.y);
+            reportView(zoom, "manual");
             return;
           }
           updatePixel(event);
@@ -1159,18 +1461,69 @@ function ImageViewport({
 function HeicViewer({ doc }: { doc: HeicDocument }) {
   return (
     <ImageViewport
-      title="HEIC 图像"
+      title={doc.kind === "heic" ? "HEIC 图像" : "RGB 图像"}
       detail={`${doc.width} × ${doc.height}`}
       width={doc.width}
       height={doc.height}
       resetKey={doc.id}
       className="heic-panel"
-      status={`${doc.width}×${doc.height} | HEIC`}
+      status={`${doc.width}×${doc.height} | ${doc.kind === "heic" ? "HEIC" : "RGB"}`}
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={doc.url} alt={doc.file.name} draggable={false} />
     </ImageViewport>
   );
+}
+
+function CompareImageViewer({
+  side,
+  doc,
+  syncState,
+  onViewChange,
+}: {
+  side: "Left" | "Right";
+  doc: ImageDocument;
+  syncState: ViewSyncState | null;
+  onViewChange: (state: ViewSyncState) => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [pixel, setPixel] = useState({ x: 0, y: 0 });
+  const raster = doc.kind === "heic" || doc.kind === "image";
+  const width = raster ? doc.width : doc.config.width;
+  const height = raster ? doc.height : doc.config.height;
+  useEffect(() => {
+    if (raster || !canvasRef.current) return;
+    const canvas = canvasRef.current;
+    canvas.width = width;
+    canvas.height = height;
+    const image = doc.kind === "yuv"
+      ? renderYuvFrame(doc.bytes, doc.config, doc.frame)
+      : renderRawPreview(doc.values, doc.config, doc.mode, doc.levels, doc.autoStretch, doc.blackLevel, doc.gain);
+    canvas.getContext("2d", { alpha: false })?.putImageData(image, 0, 0);
+  }, [doc, height, raster, width]);
+  const format = doc.kind === "yuv"
+    ? `${doc.config.format} · 帧 ${doc.frame + 1}/${doc.config.frameCount}`
+    : doc.kind === "raw"
+      ? `${doc.config.bayer} · RAW${doc.config.bitDepth}`
+      : doc.kind === "heic" ? "HEIC" : "RGB";
+  return <div className="compare-side">
+    <div className="compare-side-label"><b>{side}</b><span title={doc.file.name}>{doc.file.name}</span><em>{format}</em></div>
+    <ImageViewport
+      title={`${side} Viewer`}
+      detail={`${width} × ${height}`}
+      width={width}
+      height={height}
+      resetKey={`${side}-${doc.id}-${width}-${height}`}
+      viewerId={`${side}-${doc.id}`}
+      syncState={syncState}
+      onViewChange={onViewChange}
+      onPixel={(x, y) => setPixel({ x, y })}
+      status={`${width}×${height} | ${format} | X:${pixel.x} Y:${pixel.y}`}
+      className="compare-image-viewer"
+    >
+      {raster ? <img src={doc.url} alt={doc.file.name} draggable={false} /> : <canvas ref={canvasRef} />}
+    </ImageViewport>
+  </div>;
 }
 
 function YuvViewer({
@@ -1347,6 +1700,165 @@ function RawViewer({
   );
 }
 
+const CompareStreamViewer = forwardRef<CompareStreamHandle, {
+  side: "Left" | "Right";
+  doc: StreamDocument;
+  onSeek: (seconds: number) => void;
+  onStep: (delta: number) => void;
+}>(function CompareStreamViewer({ side, doc, onSeek, onStep }, ref) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const decoderRef = useRef<VideoDecoder | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const runRef = useRef(0);
+  const frameRef = useRef(0);
+  const [frame, setFrame] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [support, setSupport] = useState<"checking" | "supported" | "unsupported">("checking");
+  const fps = Math.max(1, doc.fps);
+  const count = doc.analysis.frames.length;
+
+  const pause = useCallback(() => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = null;
+    runRef.current += 1;
+    try { decoderRef.current?.close(); } catch { /* already closed */ }
+    decoderRef.current = null;
+    setPlaying(false);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    if (typeof VideoDecoder === "undefined") {
+      setSupport("unsupported");
+      return;
+    }
+    setSupport("checking");
+    VideoDecoder.isConfigSupported({ codec: doc.analysis.codecString, optimizeForLatency: true })
+      .then((result) => active && setSupport(result.supported ? "supported" : "unsupported"))
+      .catch(() => active && setSupport("unsupported"));
+    return () => { active = false; pause(); };
+  }, [doc.id, doc.analysis.codecString, pause]);
+
+  const chunk = useCallback((index: number) => {
+    const item = doc.analysis.frames[index];
+    if (!item) return null;
+    return new EncodedVideoChunk({
+      type: item.key ? "key" : "delta",
+      timestamp: Math.round(index * 1_000_000 / fps),
+      duration: Math.round(1_000_000 / fps),
+      data: doc.bytes.slice(item.start, item.end),
+    });
+  }, [doc, fps]);
+
+  const createDecoder = useCallback((minimum: number, run: number) => {
+    const decoder = new VideoDecoder({
+      output: (videoFrame) => {
+        if (run !== runRef.current) { videoFrame.close(); return; }
+        const index = Math.max(0, Math.min(count - 1, Math.round(videoFrame.timestamp * fps / 1_000_000)));
+        if (index < minimum) { videoFrame.close(); return; }
+        const canvas = canvasRef.current;
+        if (canvas) {
+          canvas.width = videoFrame.displayWidth;
+          canvas.height = videoFrame.displayHeight;
+          canvas.getContext("2d", { alpha: false })?.drawImage(videoFrame, 0, 0);
+        }
+        videoFrame.close();
+        frameRef.current = index;
+        setFrame(index);
+      },
+      error: () => pause(),
+    });
+    decoder.configure({ codec: doc.analysis.codecString, optimizeForLatency: true });
+    decoderRef.current = decoder;
+    return decoder;
+  }, [count, doc.analysis.codecString, fps, pause]);
+
+  const seekFrame = useCallback(async (target: number, notify: boolean) => {
+    const next = Math.max(0, Math.min(count - 1, target));
+    pause();
+    frameRef.current = next;
+    setFrame(next);
+    if (notify) onSeek(next / fps);
+    if (support !== "supported") return;
+    const run = ++runRef.current;
+    const decoder = createDecoder(next, run);
+    try {
+      for (let index = 0; index <= next; index += 1) {
+        const encoded = chunk(index);
+        if (encoded) decoder.decode(encoded);
+        if (decoder.decodeQueueSize > 60) await decoder.flush();
+      }
+      await decoder.flush();
+    } catch {
+      // Analysis remains usable when a browser decoder rejects the stream.
+    } finally {
+      if (run === runRef.current) {
+        try { decoder.close(); } catch { /* already closed */ }
+        decoderRef.current = null;
+      }
+    }
+  }, [chunk, count, createDecoder, fps, onSeek, pause, support]);
+
+  const play = useCallback(() => {
+    if (support !== "supported" || !count) return;
+    pause();
+    const start = frameRef.current >= count - 1 ? 0 : frameRef.current;
+    frameRef.current = start;
+    setFrame(start);
+    const run = ++runRef.current;
+    const decoder = createDecoder(start, run);
+    for (let index = 0; index <= start; index += 1) {
+      const encoded = chunk(index);
+      if (encoded) decoder.decode(encoded);
+    }
+    let next = start + 1;
+    setPlaying(true);
+    timerRef.current = setInterval(() => {
+      if (next >= count) { pause(); return; }
+      const encoded = chunk(next);
+      if (encoded) decoder.decode(encoded);
+      next += 1;
+    }, 1000 / fps);
+  }, [chunk, count, createDecoder, fps, pause, support]);
+
+  useImperativeHandle(ref, () => ({
+    play,
+    pause,
+    seekTime: (seconds) => void seekFrame(Math.round(seconds * fps), false),
+    step: (delta) => void seekFrame(frameRef.current + delta, false),
+    currentTime: () => frameRef.current / fps,
+  }), [fps, pause, play, seekFrame]);
+
+  const selected = doc.analysis.frames[frame];
+  return <section className="panel compare-video-card">
+    <div className="compare-side-label"><b>{side}</b><span title={doc.file.name}>{doc.file.name}</span><em>{doc.analysis.codecLabel}</em></div>
+    <div className="canvas-stage compare-video-stage">
+      <canvas ref={canvasRef} aria-label={`${side} H.26x 解码画面`} />
+      <div className="current-frame-badge"><span>当前帧</span><strong>#{frame}</strong><em>{selected?.type ?? "—"} · {formatBytes(selected?.size ?? 0)}</em></div>
+      {support !== "supported" && <div className="empty-canvas"><b>码流分析可用</b><span>{support === "checking" ? "正在检查浏览器解码器…" : "浏览器无法解码此码流"}</span></div>}
+    </div>
+    <PlaybackControls
+      playing={playing}
+      frame={frame}
+      count={count}
+      fps={fps}
+      disabled={support !== "supported"}
+      onToggle={() => playing ? pause() : play()}
+      onFrame={(next) => {
+        const delta = next - frameRef.current;
+        if (Math.abs(delta) === 1) {
+          void seekFrame(next, false);
+          onStep(delta);
+        } else {
+          void seekFrame(next, true);
+        }
+      }}
+      onFps={() => undefined}
+    />
+    <div className="compare-video-meta">{doc.analysis.width || "—"}×{doc.analysis.height || "—"} · {count.toLocaleString("zh-CN")} 帧 · WebCodecs</div>
+  </section>;
+});
+
 function DropZone({
   dragging,
   setDragging,
@@ -1370,7 +1882,7 @@ function DropZone({
     >
       <div className="drop-visual"><span /><b>+</b></div>
       <h2>拖入媒体文件</h2>
-      <p>YUV / SYUV · Bayer RAW · HEIC · H.264 · H.265</p>
+      <p>YUV / SYUV · Bayer RAW · HEIC / RGB 图片 · H.264 · H.265</p>
       <button className="button primary" type="button" onClick={onBrowse}>选择文件</button>
       <small>YUV / RAW / HEIC 可多选（最多 10 个）；H.264 / H.265 每次仅 1 个</small>
     </div>
