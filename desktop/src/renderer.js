@@ -5,6 +5,7 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 const IMAGE_LIMIT = 10;
 const PAGE_SIZE = 100;
 const TOTAL_FILE_LIMIT = Math.floor(4.2 * 1024 * 1024 * 1024);
+const PIXEL_OVERLAY_MIN_SIZE = 46;
 
 const state = {
   pending: [],
@@ -105,6 +106,10 @@ function returnHome() {
   state.sessionToken += 1;
   clearDocuments();
   resetPlayback();
+  $$("#stream-compare video").forEach(video => video.pause());
+  $("#stream-compare").innerHTML = "";
+  show($("#stream-compare"), false);
+  $("#stream-workspace").classList.remove("comparing");
   state.pending = [];
   state.streamFile = null;
   $("#pending-list").innerHTML = "";
@@ -196,19 +201,25 @@ async function receiveDroppedFiles(files) {
   await receiveInfos(infos);
 }
 
-$("#browse").addEventListener("click", async () => {
+$("#home").addEventListener("click", async () => {
   const files = await window.desktop.selectFiles();
   await receiveInfos(files);
 });
 
-$("#drop-zone").addEventListener("dragover", (event) => {
+$("#home").addEventListener("keydown", (event) => {
+  if (event.target === event.currentTarget && ["Enter", " "].includes(event.key)) {
+    event.preventDefault();
+    event.currentTarget.click();
+  }
+});
+$("#home").addEventListener("dragover", (event) => {
   event.preventDefault();
   event.currentTarget.classList.add("dragging");
 });
-$("#drop-zone").addEventListener("dragleave", (event) => {
-  event.currentTarget.classList.remove("dragging");
+$("#home").addEventListener("dragleave", (event) => {
+  if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.classList.remove("dragging");
 });
-$("#drop-zone").addEventListener("drop", async (event) => {
+$("#home").addEventListener("drop", async (event) => {
   event.preventDefault();
   event.currentTarget.classList.remove("dragging");
   await receiveDroppedFiles([...event.dataTransfer.files]);
@@ -350,6 +361,10 @@ async function createYuvDocument(file) {
     },
     frame: 0,
     fps: 25,
+    displayMode: "rgb",
+    pixelValues: "auto",
+    yuvFrameData: null,
+    yuvFrameKey: "",
     playing: false,
     zoom: null,
     fitMode: true
@@ -534,9 +549,120 @@ function viewerDocument(viewer) {
 }
 
 function viewerSize(viewer, doc) {
-  return viewer === "heic"
-    ? { width: doc.width, height: doc.height }
-    : { width: doc.config.width, height: doc.config.height };
+  if (viewer === "heic") return { width: doc.width, height: doc.height };
+  if (viewer === "yuv") {
+    return M.displaySize(doc.config.width, doc.config.height, doc.config.format, doc.displayMode || "rgb");
+  }
+  return { width: doc.config.width, height: doc.config.height };
+}
+
+function yuvModeLabel(mode) {
+  return M.DISPLAY_MODES.find((item) => item.value === mode)?.label || mode.toUpperCase();
+}
+
+function yuvPixelStatus(doc, x, y, width, height) {
+  const mode = doc.displayMode || "rgb";
+  const sample = doc.yuvFrameData
+    ? M.displaySample(doc.yuvFrameData, doc.config.width, doc.config.height, doc.config.format, mode, x, y)
+    : null;
+  const values = !sample ? ""
+    : mode === "rgb"
+      ? ` | Y:${sample.yValue} U:${sample.uValue} V:${sample.vValue}`
+      : ` | ${mode.toUpperCase()}:${sample.value}`;
+  return `${width}×${height} | ${doc.config.format} · ${yuvModeLabel(mode)} | X:${sample?.x ?? x} Y:${sample?.y ?? y}${values}`;
+}
+
+function yuvOverlayLines(doc, x, y) {
+  if (!doc.yuvFrameData) return [];
+  const mode = doc.displayMode || "rgb";
+  const componentX = mode === "u" || mode === "v" ? Math.floor(x / 2) : x;
+  const componentY = (mode === "u" || mode === "v")
+    && doc.config.format !== "YUY2" && doc.config.format !== "UYVY" && doc.config.format !== "GRAY8"
+    ? Math.floor(y / 2)
+    : y;
+  const sample = M.displaySample(doc.yuvFrameData, doc.config.width, doc.config.height, doc.config.format, mode, componentX, componentY);
+  if (mode === "rgb") return [`Y:${sample.yValue}`, `U:${sample.uValue}`, `V:${sample.vValue}`];
+  return [`${mode.toUpperCase()}:${sample.value}`];
+}
+
+function drawPixelOverlayCanvas(canvas, stage, surface, width, height, enabled, linesForPixel) {
+  if (!canvas || !stage || !surface || !enabled) {
+    if (canvas) canvas.hidden = true;
+    return { visible: false, cells: 0, screenPixelsPerSourcePixel: 0 };
+  }
+  const bounds = surface.getBoundingClientRect();
+  const scaleX = bounds.width / Math.max(1, width);
+  const scaleY = bounds.height / Math.max(1, height);
+  const screenPixelsPerSourcePixel = Math.min(scaleX, scaleY);
+  if (screenPixelsPerSourcePixel < PIXEL_OVERLAY_MIN_SIZE) {
+    canvas.hidden = true;
+    return { visible: false, cells: 0, screenPixelsPerSourcePixel };
+  }
+
+  const viewportWidth = stage.clientWidth;
+  const viewportHeight = stage.clientHeight;
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  canvas.hidden = false;
+  canvas.style.left = `${stage.scrollLeft}px`;
+  canvas.style.top = `${stage.scrollTop}px`;
+  canvas.style.width = `${viewportWidth}px`;
+  canvas.style.height = `${viewportHeight}px`;
+  const pixelWidth = Math.max(1, Math.round(viewportWidth * dpr));
+  const pixelHeight = Math.max(1, Math.round(viewportHeight * dpr));
+  if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+  if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
+  const context = canvas.getContext("2d");
+  if (!context) return { visible: false, cells: 0, screenPixelsPerSourcePixel };
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  context.clearRect(0, 0, viewportWidth, viewportHeight);
+
+  const startX = Math.max(0, Math.floor((stage.scrollLeft - surface.offsetLeft) / scaleX));
+  const startY = Math.max(0, Math.floor((stage.scrollTop - surface.offsetTop) / scaleY));
+  const endX = Math.min(width, Math.ceil((stage.scrollLeft + viewportWidth - surface.offsetLeft) / scaleX));
+  const endY = Math.min(height, Math.ceil((stage.scrollTop + viewportHeight - surface.offsetTop) / scaleY));
+  const fontSize = Math.max(10, Math.min(14, screenPixelsPerSourcePixel / 4));
+  const lineHeight = fontSize * 1.15;
+  context.font = `600 ${fontSize}px Consolas, monospace`;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  let cells = 0;
+
+  for (let y = startY; y < endY; y += 1) {
+    for (let x = startX; x < endX; x += 1) {
+      const left = surface.offsetLeft + x * scaleX - stage.scrollLeft;
+      const top = surface.offsetTop + y * scaleY - stage.scrollTop;
+      context.strokeStyle = "rgba(255, 255, 255, 0.58)";
+      context.lineWidth = 1;
+      context.strokeRect(left + 0.5, top + 0.5, scaleX - 1, scaleY - 1);
+      const lines = linesForPixel(x, y);
+      const blockHeight = lines.length * lineHeight;
+      const centerY = top + scaleY / 2 - blockHeight / 2 + lineHeight / 2;
+      context.fillStyle = "rgba(10, 18, 16, 0.62)";
+      context.fillRect(left + 3, top + Math.max(3, (scaleY - blockHeight) / 2 - 3), scaleX - 6, blockHeight + 6);
+      context.fillStyle = "#ffffff";
+      context.shadowColor = "rgba(0, 0, 0, 0.9)";
+      context.shadowBlur = 2;
+      lines.forEach((line, index) => context.fillText(line, left + scaleX / 2, centerY + index * lineHeight));
+      context.shadowBlur = 0;
+      cells += 1;
+    }
+  }
+  return { visible: true, cells, screenPixelsPerSourcePixel };
+}
+
+let yuvOverlayFrame = 0;
+function scheduleYuvPixelOverlay() {
+  cancelAnimationFrame(yuvOverlayFrame);
+  yuvOverlayFrame = requestAnimationFrame(() => {
+    const doc = viewerDocument("yuv");
+    if (!doc) return;
+    const { stage, surface } = viewerElements("yuv");
+    drawPixelOverlayCanvas(
+      $("#yuv-pixel-overlay"), stage, surface, doc.config.width, doc.config.height,
+      (doc.pixelValues || "auto") !== "off",
+      (x, y) => yuvOverlayLines(doc, x, y)
+    );
+  });
 }
 
 function updateViewerStatus(viewer) {
@@ -545,7 +671,8 @@ function updateViewerStatus(viewer) {
   const zoom = Math.round((doc.zoom || 1) * 100);
   if (viewer === "yuv") {
     const pixel = doc.pixel || { x: 0, y: 0 };
-    $("#yuv-status").textContent = `${doc.config.width}×${doc.config.height} | ${doc.config.format} | Zoom ${zoom}% | X:${pixel.x} Y:${pixel.y}`;
+    const size = viewerSize("yuv", doc);
+    $("#yuv-status").textContent = `${yuvPixelStatus(doc, pixel.x, pixel.y, size.width, size.height)} | Zoom ${zoom}%`;
   } else if (viewer === "raw") {
     const pixel = doc.pixel || { x: 0, y: 0 };
     const value = doc.values[pixel.y * doc.config.width + pixel.x] || 0;
@@ -576,6 +703,7 @@ function applyImageZoom(viewer) {
     value.value = option.value;
   }
   updateViewerStatus(viewer);
+  if (viewer === "yuv") scheduleYuvPixelOverlay();
 }
 
 function setImageZoom(viewer, zoom, anchor) {
@@ -589,7 +717,7 @@ function setImageZoom(viewer, zoom, anchor) {
   const viewportY = (anchor?.y ?? bounds.top + stage.clientHeight / 2) - bounds.top;
   const imageX = (stage.scrollLeft + viewportX - surface.offsetLeft) / previous;
   const imageY = (stage.scrollTop + viewportY - surface.offsetTop) / previous;
-  doc.zoom = Math.max(0.1, Math.min(16, zoom));
+  doc.zoom = Math.max(0.1, Math.min(128, zoom));
   applyImageZoom(viewer);
   requestAnimationFrame(() => {
     stage.scrollLeft = surface.offsetLeft + imageX * doc.zoom - viewportX;
@@ -606,7 +734,7 @@ function fitImage(viewer) {
   const availableWidth = Math.max(1, stage.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight));
   const availableHeight = Math.max(1, stage.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom));
   doc.fitMode = true;
-  doc.zoom = Math.max(0.1, Math.min(16, availableWidth / width, availableHeight / height));
+  doc.zoom = Math.max(0.1, Math.min(128, availableWidth / width, availableHeight / height));
   applyImageZoom(viewer);
   stage.scrollLeft = 0;
   stage.scrollTop = 0;
@@ -644,6 +772,7 @@ $$('.zoom-toolbar select[data-action="preset"]').forEach((select) => {
     const doc = viewerDocument(viewer);
     setImageZoom(viewer, (doc.zoom || 1) * (event.deltaY < 0 ? 1.12 : 1 / 1.12), { x: event.clientX, y: event.clientY });
   }, { passive: false });
+  if (viewer === "yuv") stage.addEventListener("scroll", scheduleYuvPixelOverlay, { passive: true });
   stage.addEventListener("pointerdown", (event) => {
     if (!viewerDocument(viewer) || (event.button !== 0 && event.button !== 1)) return;
     drag = { x: event.clientX, y: event.clientY, left: stage.scrollLeft, top: stage.scrollTop };
@@ -689,6 +818,9 @@ $$('.zoom-toolbar select[data-action="preset"]').forEach((select) => {
 
 function populateYuvFormats() {
   $("#yuv-format").innerHTML = M.FORMATS.map((format) => `<option>${format}</option>`).join("");
+  $("#yuv-display").innerHTML = M.DISPLAY_MODES
+    .map((item) => `<option value="${item.value}">${item.label}</option>`)
+    .join("");
 }
 
 function syncYuvControls() {
@@ -696,18 +828,40 @@ function syncYuvControls() {
   if (!doc || doc.kind !== "yuv") return;
   const config = doc.config;
   $("#yuv-format").value = config.format;
+  $("#yuv-display").value = doc.displayMode || "rgb";
+  $("#yuv-pixel-values").value = doc.pixelValues || "auto";
   $("#yuv-width").value = config.width;
   $("#yuv-height").value = config.height;
   $("#yuv-fps").value = doc.fps;
   $("#yuv-slider").max = Math.max(0, config.frameCount - 1);
   $("#yuv-slider").value = doc.frame;
   $("#yuv-counter").textContent = `帧 ${doc.frame + 1} / ${config.frameCount}`;
+  $("#yuv-viewer-title").textContent = doc.displayMode === "rgb"
+    ? "YUV 画面"
+    : `${(doc.displayMode || "rgb").toUpperCase()} 分量`;
   $("#yuv-detected").innerHTML = `
     <span>当前解析</span>
     <strong>${config.width} × ${config.height} · ${config.format}</strong>
     <small>每帧 ${M.formatBytes(config.frameBytes)} · 共 ${config.frameCount.toLocaleString("zh-CN")} 帧
     ${config.dataOffset ? ` · 文件头 ${config.dataOffset} B` : ""}</small>
   `;
+}
+
+async function loadYuvFrameData(doc) {
+  const config = doc.config;
+  const key = `${config.dataOffset || 0}:${doc.frame}:${config.frameBytes}`;
+  if (doc.yuvFrameKey === key && doc.yuvFrameData?.byteLength === config.frameBytes) {
+    return doc.yuvFrameData;
+  }
+  const raw = new Uint8Array(await window.desktop.readSlice(
+    doc.file.path,
+    (config.dataOffset || 0) + doc.frame * config.frameBytes,
+    config.frameBytes
+  ));
+  if (raw.byteLength < config.frameBytes) throw new Error("文件长度不足一帧");
+  doc.yuvFrameKey = key;
+  doc.yuvFrameData = raw;
+  return raw;
 }
 
 function renderCandidateList() {
@@ -738,17 +892,14 @@ async function renderYuvFrame() {
   const config = doc.config;
   doc.frame = Math.max(0, Math.min(doc.frame, config.frameCount - 1));
   try {
-    const raw = new Uint8Array(await window.desktop.readSlice(
-      doc.file.path,
-      (config.dataOffset || 0) + doc.frame * config.frameBytes,
-      config.frameBytes
-    ));
+    const raw = await loadYuvFrameData(doc);
     if (token !== state.renderToken) return;
-    if (raw.byteLength < config.frameBytes) throw new Error("文件长度不足一帧");
-    const image = M.renderYuv(raw, config.width, config.height, config.format);
+    const mode = doc.displayMode || "rgb";
+    const size = M.displaySize(config.width, config.height, config.format, mode);
+    const image = M.renderYuv(raw, config.width, config.height, config.format, mode);
     const canvas = $("#yuv-canvas");
-    canvas.width = config.width;
-    canvas.height = config.height;
+    canvas.width = size.width;
+    canvas.height = size.height;
     canvas.getContext("2d", { alpha: false }).putImageData(image, 0, 0);
     if (doc.zoom == null || doc.fitMode) fitImage("yuv");
     else applyImageZoom("yuv");
@@ -783,6 +934,20 @@ async function changeYuvConfig() {
 
 ["#yuv-format", "#yuv-width", "#yuv-height"].forEach((selector) => {
   $(selector).addEventListener("change", changeYuvConfig);
+});
+$("#yuv-display").addEventListener("change", async (event) => {
+  const doc = activeDocument();
+  if (!doc || doc.kind !== "yuv") return;
+  doc.displayMode = event.target.value;
+  doc.pixel = { x: 0, y: 0 };
+  syncYuvControls();
+  await renderYuvFrame();
+});
+$("#yuv-pixel-values").addEventListener("change", (event) => {
+  const doc = activeDocument();
+  if (!doc || doc.kind !== "yuv") return;
+  doc.pixelValues = event.target.value;
+  scheduleYuvPixelOverlay();
 });
 $("#yuv-fps").addEventListener("change", () => {
   const doc = activeDocument();
@@ -956,13 +1121,15 @@ function compareDoc(side) {
 }
 
 function compareDocSize(doc) {
-  return doc.kind === "heic" || doc.kind === "image"
-    ? { width: doc.width, height: doc.height }
-    : { width: doc.config.width, height: doc.config.height };
+  if (doc.kind === "heic" || doc.kind === "image") return { width: doc.width, height: doc.height };
+  if (doc.kind === "yuv") {
+    return M.displaySize(doc.config.width, doc.config.height, doc.config.format, doc.displayMode || "rgb");
+  }
+  return { width: doc.config.width, height: doc.config.height };
 }
 
 function compareFormat(doc) {
-  if (doc.kind === "yuv") return `${doc.config.format} · 帧 ${doc.frame + 1}/${doc.config.frameCount}`;
+  if (doc.kind === "yuv") return `${doc.config.format} · ${yuvModeLabel(doc.displayMode || "rgb")} · 帧 ${doc.frame + 1}/${doc.config.frameCount}`;
   if (doc.kind === "raw") return `${doc.config.bayer} · RAW${doc.config.bitDepth}`;
   return doc.kind === "heic" ? "HEIC" : "RGB";
 }
@@ -990,12 +1157,14 @@ async function renderImageCompare() {
       ? `<img alt="${escapeHtml(doc.file.name)}" draggable="false" />`
       : "<canvas></canvas>";
     return `<section class="compare-side" data-side="${side}">
-      <div class="compare-side-label"><b>${label}</b><span title="${escapeHtml(doc.file.name)}">${escapeHtml(doc.file.name)}</span><em>${escapeHtml(compareFormat(doc))}</em></div>
+      <div class="compare-side-label"><b>${label}</b><span title="${escapeHtml(doc.file.name)}">${escapeHtml(doc.file.name)}</span><em>${escapeHtml(compareFormat(doc))}</em>
+        ${doc.kind === "yuv" ? `<div class="compare-yuv-controls"><label class="display-mode-control">Display:<select class="compare-display-mode">${M.DISPLAY_MODES.map((item) => `<option value="${item.value}" ${item.value === (doc.displayMode || "rgb") ? "selected" : ""}>${item.label}</option>`).join("")}</select></label><label class="display-mode-control">Pixel Values:<select class="compare-pixel-values"><option value="auto" ${(doc.pixelValues || "auto") === "auto" ? "selected" : ""}>Auto</option><option value="off" ${doc.pixelValues === "off" ? "selected" : ""}>Off</option></select></label></div>` : ""}
+      </div>
       <div class="panel viewer image-viewer-panel compare-image-viewer">
         <div class="viewer-head"><strong>${label} Viewer</strong><span>${size.width} × ${size.height}</span><div class="zoom-toolbar">
           <button data-action="out">−</button><span class="compare-zoom-value">100%</span><button data-action="in">＋</button><button data-action="fit">Fit</button><button data-action="reset">100%</button><button data-action="fullscreen">全屏</button>
         </div></div>
-        <div class="canvas-stage checker zoom-stage compare-stage"><div class="image-surface">${media}</div></div>
+        <div class="canvas-stage checker zoom-stage compare-stage"><div class="image-surface">${media}</div>${doc.kind === "yuv" ? `<canvas class="pixel-overlay compare-pixel-overlay" aria-hidden="true"></canvas>` : ""}</div>
         <div class="viewer-status">${size.width}×${size.height} | ${escapeHtml(compareFormat(doc))} | X:0 Y:0</div>
       </div>
     </section>`;
@@ -1005,6 +1174,21 @@ async function renderImageCompare() {
     state.syncView = event.target.checked;
     renderImageCompare();
   });
+  $$("#image-compare .compare-display-mode").forEach((select) => select.addEventListener("change", async () => {
+    const side = select.closest(".compare-side").dataset.side;
+    const doc = compareDoc(side);
+    if (!doc || doc.kind !== "yuv") return;
+    doc.displayMode = select.value;
+    doc.pixel = { x: 0, y: 0 };
+    await renderImageCompare();
+  }));
+  $$("#image-compare .compare-pixel-values").forEach((select) => select.addEventListener("change", () => {
+    const side = select.closest(".compare-side").dataset.side;
+    const doc = compareDoc(side);
+    if (!doc || doc.kind !== "yuv") return;
+    doc.pixelValues = select.value;
+    scheduleComparePixelOverlay(side);
+  }));
   await Promise.all([renderCompareImage("left", left, token), renderCompareImage("right", right, token)]);
   if (token !== state.compareRenderToken) return;
   bindCompareImageControls("left");
@@ -1026,9 +1210,9 @@ async function renderCompareImage(side, doc, token) {
   let image;
   if (doc.kind === "yuv") {
     const config = doc.config;
-    const raw = new Uint8Array(await window.desktop.readSlice(doc.file.path, (config.dataOffset || 0) + doc.frame * config.frameBytes, config.frameBytes));
+    const raw = await loadYuvFrameData(doc);
     if (token !== state.compareRenderToken) return;
-    image = M.renderYuv(raw, config.width, config.height, config.format);
+    image = M.renderYuv(raw, config.width, config.height, config.format, doc.displayMode || "rgb");
   } else {
     image = R.render(doc.values, doc.config, doc.mode, doc.levels, doc.autoStretch, doc.blackLevel, doc.gain);
   }
@@ -1043,6 +1227,21 @@ function compareElements(side) {
   const root = $(`#image-compare [data-side="${side}"]`);
   const stage = root?.querySelector(".compare-stage");
   return { root, stage, surface: stage?.querySelector(".image-surface") };
+}
+
+const compareOverlayFrames = { left: 0, right: 0 };
+function scheduleComparePixelOverlay(side) {
+  cancelAnimationFrame(compareOverlayFrames[side]);
+  compareOverlayFrames[side] = requestAnimationFrame(() => {
+    const doc = compareDoc(side);
+    const { root, stage, surface } = compareElements(side);
+    if (!doc || doc.kind !== "yuv" || !root || !stage || !surface) return;
+    drawPixelOverlayCanvas(
+      root.querySelector(".compare-pixel-overlay"), stage, surface, doc.config.width, doc.config.height,
+      (doc.pixelValues || "auto") !== "off",
+      (x, y) => yuvOverlayLines(doc, x, y)
+    );
+  });
 }
 
 function compareCenter(side, zoom) {
@@ -1065,6 +1264,7 @@ function applyCompareView(side, center) {
   surface.style.width = `${Math.max(1, Math.round(size.width * view.zoom))}px`;
   surface.style.height = `${Math.max(1, Math.round(size.height * view.zoom))}px`;
   root.querySelector(".compare-zoom-value").textContent = `${Math.round(view.zoom * 100)}%`;
+  scheduleComparePixelOverlay(side);
   if (center) requestAnimationFrame(() => {
     stage.scrollLeft = surface.offsetLeft + center.x * size.width * view.zoom - stage.clientWidth / 2;
     stage.scrollTop = surface.offsetTop + center.y * size.height * view.zoom - stage.clientHeight / 2;
@@ -1084,7 +1284,7 @@ function setCompareZoom(side, zoom, anchor, sync = true) {
     x: Math.max(0, Math.min(1, (stage.scrollLeft + viewportX - surface.offsetLeft) / previous / size.width)),
     y: Math.max(0, Math.min(1, (stage.scrollTop + viewportY - surface.offsetTop) / previous / size.height))
   };
-  state.compareViews[side] = { zoom: Math.max(0.1, Math.min(16, zoom)), fitMode: false };
+  state.compareViews[side] = { zoom: Math.max(0.1, Math.min(128, zoom)), fitMode: false };
   applyCompareView(side, center);
   if (sync && state.syncView) {
     const other = side === "left" ? "right" : "left";
@@ -1101,7 +1301,7 @@ function fitCompareImage(side, sync = true) {
   const style = getComputedStyle(stage);
   const width = Math.max(1, stage.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight));
   const height = Math.max(1, stage.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom));
-  state.compareViews[side] = { zoom: Math.max(0.1, Math.min(16, width / size.width, height / size.height)), fitMode: true };
+  state.compareViews[side] = { zoom: Math.max(0.1, Math.min(128, width / size.width, height / size.height)), fitMode: true };
   applyCompareView(side, { x: 0.5, y: 0.5 });
   if (sync && state.syncView) fitCompareImage(side === "left" ? "right" : "left", false);
 }
@@ -1135,6 +1335,7 @@ function bindCompareImageControls(side) {
     event.preventDefault();
     setCompareZoom(side, (state.compareViews[side]?.zoom || 1) * (event.deltaY < 0 ? 1.12 : 1 / 1.12), { x: event.clientX, y: event.clientY });
   }, { passive: false });
+  stage.addEventListener("scroll", () => scheduleComparePixelOverlay(side), { passive: true });
   let drag;
   stage.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 && event.button !== 1) return;
@@ -1157,7 +1358,9 @@ function bindCompareImageControls(side) {
     const x = Math.floor((event.clientX - bounds.left) / Math.max(1, bounds.width) * size.width);
     const y = Math.floor((event.clientY - bounds.top) / Math.max(1, bounds.height) * size.height);
     if (x >= 0 && y >= 0 && x < size.width && y < size.height) {
-      root.querySelector(".viewer-status").textContent = `${size.width}×${size.height} | ${compareFormat(doc)} | X:${x} Y:${y}`;
+      root.querySelector(".viewer-status").textContent = doc.kind === "yuv"
+        ? yuvPixelStatus(doc, x, y, size.width, size.height)
+        : `${size.width}×${size.height} | ${compareFormat(doc)} | X:${x} Y:${y}`;
     }
   });
   const stop = () => {
@@ -1271,7 +1474,10 @@ function renderStreamCompare() {
   const container = $("#stream-compare");
   const enabled = state.compareMode && state.streams.length >= 2;
   show(container, enabled);
-  if (!enabled) return;
+  $("#stream-workspace").classList.toggle("comparing", enabled);
+  $$("#stream-compare video").forEach((video) => video.pause());
+  if (!enabled) { container.innerHTML = ""; return; }
+  $("#stream-video").pause();
   ensureCompareSelection(state.streams);
   const left = streamCompareDoc("left");
   const right = streamCompareDoc("right");
@@ -1284,9 +1490,11 @@ function renderStreamCompare() {
       <div class="canvas-stage compare-video-stage"><video controls ${doc.proxyUrl ? `src="${escapeHtml(doc.proxyUrl)}"` : ""}></video><div class="current-frame-badge"><span>当前帧</span><strong>#0</strong><em>—</em></div>${doc.proxyUrl ? "" : `<div class="placeholder"><b>逐帧分析仍可使用</b><span>${escapeHtml(doc.proxyError || "播放代理不可用")}</span></div>`}</div>
       <div class="compare-transport"><button data-action="prev">|←</button><button data-action="toggle">▶</button><button data-action="next">→|</button><span>00:00.000</span><input type="range" min="0" max="${Math.max(0, count - 1)}" value="0" /></div>
       <div class="compare-video-meta">${doc.analysis.width || "—"}×${doc.analysis.height || "—"} · ${count.toLocaleString("zh-CN")} 帧 · ${badge}</div>
+      <div class="video-divider" role="separator" aria-label="调整视频与帧大小区域高度" aria-orientation="horizontal" tabindex="0"></div>
+      ${compareFrameChartMarkup(doc)}
     </section>`;
   }).join("");
-  container.innerHTML = `<div class="compare-toolbar panel"><strong>Compare 视频对比</strong><button id="play-both" class="primary">▶ Play Both</button><button id="pause-both">Ⅱ Pause Both</button><label><input id="sync-playback" type="checkbox" ${state.syncPlayback ? "checked" : ""}/> Sync Playback</label><span>时间偏差超过 100 ms 时轻量纠偏</span></div><div class="compare-grid video-compare-grid">${cards}</div>`;
+  container.innerHTML = `<div class="compare-toolbar panel"><strong>Compare 视频对比</strong><button id="play-both" class="primary">▶ Play Both</button><button id="pause-both">Ⅱ Pause Both</button><label><input id="sync-playback" type="checkbox" ${state.syncPlayback ? "checked" : ""}/> Sync Playback</label></div><div class="compare-grid video-compare-grid">${cards}</div>`;
   $("#sync-playback").addEventListener("change", (event) => { state.syncPlayback = event.target.checked; });
   $("#play-both").addEventListener("click", () => {
     const videos = $$("#stream-compare video");
@@ -1295,7 +1503,48 @@ function renderStreamCompare() {
   $("#pause-both").addEventListener("click", () => $$("#stream-compare video").forEach((video) => video.pause()));
   bindCompareVideo("left", left);
   bindCompareVideo("right", right);
+  bindVideoDividers(container);
 }
+
+function compareFrameChartMarkup(doc) {
+  const frames = doc.analysis.frames;
+  const slots = Math.min(200, frames.length);
+  const max = frames.reduce((value, frame) => Math.max(value, frame.size), 1);
+  const min = frames.reduce((value, frame) => Math.min(value, frame.size), Infinity);
+  const bars = Array.from({ length: slots }, (_, slot) => {
+    const start = Math.floor(slot * frames.length / slots);
+    const end = Math.floor((slot + 1) * frames.length / slots);
+    const peak = frames.slice(start, end).reduce((a, b) => a.size > b.size ? a : b);
+    return `<button data-frame="${peak.index}" data-start="${start}" data-end="${end}" class="${peak.key ? "iframe" : "pframe"}" style="height:${Math.max(3, peak.size / max * 100)}%" title="帧 ${peak.index} · ${M.formatBytes(peak.size)}${end - start > 1 ? '（区间峰值）' : ''}"></button>`;
+  }).join("");
+  return `<section class="compare-frame-analysis"><div class="section-head"><h2>Frame Size <small class="chart-current"></small></h2><span class="frame-extrema">最大 ${M.formatBytes(max)} · 最小 ${M.formatBytes(Number.isFinite(min) ? min : 0)}</span></div><div class="chart-shell"><div class="y-axis">${[1,.5,0].map(tick => `<span style="bottom:${tick * 100}%">${M.formatBytes(max * tick)}</span>`).join("")}</div><div class="frame-chart">${bars}</div></div><div class="axis chart-axis"><span>帧 0 · I 橙 / P 绿 · 区间峰值</span><span>帧 ${Math.max(0, frames.length - 1)}</span></div></section>`;
+}
+
+function bindVideoDividers(root) {
+  root.querySelectorAll(".video-divider").forEach((divider) => {
+    const workspace = $("#stream-workspace");
+    const resize = (height) => {
+      const limit = Math.max(110, workspace.clientHeight * .5);
+      const value = Math.round(Math.max(110, Math.min(limit, height)));
+      workspace.style.setProperty("--frame-height", `${value}px`);
+      divider.setAttribute("aria-valuenow", String(value));
+    };
+    divider.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      divider.setPointerCapture(event.pointerId);
+      const initial = divider.nextElementSibling.getBoundingClientRect().height;
+      const y = event.clientY;
+      divider.onpointermove = (move) => resize(initial + y - move.clientY);
+      divider.onlostpointercapture = () => { divider.onpointermove = null; };
+    });
+    divider.addEventListener("keydown", (event) => {
+      if (!["ArrowUp", "ArrowDown"].includes(event.key)) return;
+      event.preventDefault();
+      resize(divider.nextElementSibling.getBoundingClientRect().height + (event.key === "ArrowUp" ? 20 : -20));
+    });
+  });
+}
+bindVideoDividers($("#stream-workspace"));
 
 function bindCompareVideo(side, doc) {
   const root = $(`#stream-compare [data-side="${side}"]`);
@@ -1310,6 +1559,9 @@ function bindCompareVideo(side, doc) {
     root.querySelector(".compare-transport span").textContent = M.formatTime(frame / doc.fps);
     root.querySelector(".current-frame-badge strong").textContent = `#${frame}`;
     root.querySelector(".current-frame-badge em").textContent = data ? `${data.type} · ${M.formatBytes(data.size)}` : "—";
+    root.querySelector(".chart-current").textContent = data ? `#${frame} · ${data.type} · ${M.formatBytes(data.size)}` : "";
+    root.querySelectorAll(".frame-chart button").forEach(button => button.classList.toggle("active", frame >= Number(button.dataset.start) && frame < Number(button.dataset.end)));
+    if (state.activeStreamId === doc.id && state.stream.currentFrame !== frame) selectStreamFrame(frame, false);
     toggle.textContent = video.paused ? "▶" : "Ⅱ";
     if (!state.syncPlayback || state.compareSyncGuard || video.paused) return;
     const otherSide = side === "left" ? "right" : "left";
@@ -1323,6 +1575,15 @@ function bindCompareVideo(side, doc) {
   video.addEventListener("timeupdate", update);
   video.addEventListener("play", update);
   video.addEventListener("pause", update);
+  video.addEventListener("seeked", update);
+  const followFrame = () => {
+    if (!video.isConnected) return;
+    update();
+    video.requestVideoFrameCallback?.(followFrame);
+  };
+  video.requestVideoFrameCallback?.(followFrame);
+  root.querySelectorAll(".frame-chart button").forEach(button => button.addEventListener("click", () => seekCompareVideo(side, Number(button.dataset.frame) / doc.fps, true)));
+  update();
   toggle.addEventListener("click", () => video.paused ? video.play().catch(() => undefined) : video.pause());
   root.querySelector('[data-action="prev"]').addEventListener("click", () => stepCompareVideo(side, -1));
   root.querySelector('[data-action="next"]').addEventListener("click", () => stepCompareVideo(side, 1));
@@ -1473,6 +1734,10 @@ function selectStreamFrame(frame, seek) {
   }
   updateCurrentFrameUi();
   if (!seek) return;
+  if (state.compareMode) {
+    const side = state.activeStreamId === state.leftId ? "left" : state.activeStreamId === state.rightId ? "right" : null;
+    if (side) { seekCompareVideo(side, target / state.stream.fps, true); return; }
+  }
   const video = $("#stream-video");
   if (!video.src) {
     toast("播放代理仍在生成；当前帧选择已记录。");
@@ -1487,6 +1752,7 @@ function updateCurrentFrameUi() {
   if (!frame) return;
   $("#current-frame-badge strong").textContent = `#${frame.index}`;
   $("#current-frame-badge em").textContent = `${frame.type} · ${M.formatBytes(frame.size)}`;
+  $("#chart-current-frame").textContent = `#${frame.index} · ${frame.type} · ${M.formatBytes(frame.size)}`;
   $$("#frame-chart button").forEach((button) => {
     const start = Number(button.dataset.start);
     const end = Number(button.dataset.end);
@@ -1507,6 +1773,12 @@ $("#stream-video").addEventListener("seeked", (event) => {
   const frame = Math.round(event.currentTarget.currentTime * state.stream.fps);
   selectStreamFrame(frame, false);
 });
+function followStreamFrame() {
+  const video = $("#stream-video");
+  if (state.stream.analysis && !video.paused) selectStreamFrame(Math.floor(video.currentTime * state.stream.fps + .0001), false);
+  video.requestVideoFrameCallback?.(followStreamFrame);
+}
+$("#stream-video").requestVideoFrameCallback?.(followStreamFrame);
 
 async function prepareProxy(file, kind) {
   const status = $("#proxy-status");

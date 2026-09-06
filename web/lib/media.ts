@@ -9,6 +9,18 @@ export type YuvFormat =
   | "UYVY"
   | "GRAY8";
 
+export type YuvDisplayMode = "rgb" | "y" | "u" | "v";
+
+export const YUV_DISPLAY_MODES: Array<{
+  value: YuvDisplayMode;
+  label: string;
+}> = [
+  { value: "rgb", label: "YUV / RGB" },
+  { value: "y", label: "Y" },
+  { value: "u", label: "U" },
+  { value: "v", label: "V" },
+];
+
 export interface YuvCandidate {
   width: number;
   height: number;
@@ -185,6 +197,60 @@ function yuvPixel(
   return [yValue, u, v] as const;
 }
 
+export function yuvDisplaySize(
+  width: number,
+  height: number,
+  format: YuvFormat,
+  mode: YuvDisplayMode,
+) {
+  if (mode === "rgb" || mode === "y" || format === "GRAY8") {
+    return { width, height };
+  }
+  if (format === "YUY2" || format === "UYVY") {
+    return { width: Math.ceil(width / 2), height };
+  }
+  return { width: Math.ceil(width / 2), height: Math.ceil(height / 2) };
+}
+
+function yuvSourceCoordinate(
+  format: YuvFormat,
+  mode: YuvDisplayMode,
+  x: number,
+  y: number,
+) {
+  if (mode === "rgb" || mode === "y" || format === "GRAY8") return { x, y };
+  if (format === "YUY2" || format === "UYVY") return { x: x * 2, y };
+  return { x: x * 2, y: y * 2 };
+}
+
+export function yuvDisplaySample(
+  data: Uint8Array,
+  candidate: Pick<YuvCandidate, "width" | "height" | "format" | "frameBytes"> &
+    Partial<Pick<YuvCandidate, "dataOffset">>,
+  frameIndex: number,
+  mode: YuvDisplayMode,
+  x: number,
+  y: number,
+) {
+  const { width, height, format, frameBytes } = candidate;
+  const size = yuvDisplaySize(width, height, format, mode);
+  const displayX = Math.max(0, Math.min(size.width - 1, Math.floor(x)));
+  const displayY = Math.max(0, Math.min(size.height - 1, Math.floor(y)));
+  const source = yuvSourceCoordinate(format, mode, displayX, displayY);
+  const offset = (Number(candidate.dataOffset) || 0) + frameIndex * frameBytes;
+  const [yv, u, v] = yuvPixel(data, width, height, format, source.x, source.y, offset);
+  return {
+    x: displayX,
+    y: displayY,
+    sourceX: source.x,
+    sourceY: source.y,
+    yValue: yv,
+    uValue: u,
+    vValue: v,
+    value: mode === "y" ? yv : mode === "u" ? u : mode === "v" ? v : undefined,
+  };
+}
+
 function contentScore(
   data: Uint8Array,
   width: number,
@@ -289,18 +355,29 @@ export function renderYuvFrame(
   data: Uint8Array,
   candidate: Pick<YuvCandidate, "width" | "height" | "format" | "frameBytes">,
   frameIndex: number,
+  mode: YuvDisplayMode = "rgb",
 ) {
   const { width, height, format, frameBytes } = candidate;
-  const output = new ImageData(width, height);
+  const size = yuvDisplaySize(width, height, format, mode);
+  const output = new ImageData(size.width, size.height);
   const offset = ("dataOffset" in candidate ? Number(candidate.dataOffset) || 0 : 0) +
     frameIndex * frameBytes;
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const [yv, u, v] = yuvPixel(data, width, height, format, x, y, offset);
+  for (let y = 0; y < size.height; y += 1) {
+    for (let x = 0; x < size.width; x += 1) {
+      const source = yuvSourceCoordinate(format, mode, x, y);
+      const [yv, u, v] = yuvPixel(data, width, height, format, source.x, source.y, offset);
+      const i = (y * size.width + x) * 4;
+      if (mode !== "rgb") {
+        const value = mode === "y" ? yv : mode === "u" ? u : v;
+        output.data[i] = value;
+        output.data[i + 1] = value;
+        output.data[i + 2] = value;
+        output.data[i + 3] = 255;
+        continue;
+      }
       const c = yv - 16;
       const d = u - 128;
       const e = v - 128;
-      const i = (y * width + x) * 4;
       output.data[i] = clamp((298 * c + 409 * e + 128) >> 8);
       output.data[i + 1] = clamp((298 * c - 100 * d - 208 * e + 128) >> 8);
       output.data[i + 2] = clamp((298 * c + 516 * d + 128) >> 8);

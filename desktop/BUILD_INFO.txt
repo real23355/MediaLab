@@ -1,35 +1,24 @@
-MediaLab Portable V0.0.6
-Build date: 2026-08-09
+MediaLab Portable V0.0.7
+Build date: 2026-09-06
 Target: Windows x64 portable
-Execution level: asInvoker（当前用户权限，无需管理员权限）
+Execution level: asInvoker (no administrator privileges required)
 
-Portable executable:
-release/MediaLab-Portable-0.0.6.exe
-
-Size:
-123834210 bytes
-
-SHA-256:
-C911971A799CF053A1DD3AE2539D5A41FFFCC63A087B0BD13A51EED0DAEEB754
+Portable executable: release/MediaLab-Portable-0.0.7.exe
+Portable bytes: 116315800
+Windows directory bytes: 462110560
+Portable SHA-256: 6BE8442C96B0FF34888BF6B24516C3D9F63490F1C799AD87BF5EB4174EBE515B
 
 Validated:
-- Web production build and rendered HTML tests passed
-- Browser regression passed for RAW, YUV/SYUV and HEIC
-- RAW10 packed/unpacked and Bayer unit tests passed
-- Real 3840×2160 RGGB RAW10 Unpacked16 LE sample decoded and rendered
-- Zoom at cursor, 1:1, Fit, pan and pixel inspection were verified
-- Responsive Viewer measured at 1280x720, 1920x1080, 2560x1440 and 3840x2160
-- H.264/H.265 proxy decode prefers D3D11VA and falls back to software decode
-- Image Compare Sync View and normalized pan regression passed
-- H.264/H.265 Compare Play Both, Pause Both, sync seek and frame step passed
-- Independent per-video D3D11VA/software fallback regression passed
-- Electron source syntax checks passed
-- Packaged app.asar contains index.html, renderer.js, media.js, raw.js and heic.cjs
-- Packaged resources contain FFmpeg, FFprobe and third-party notices
-- Packaged FFprobe/FFmpeg validated H.265 and H.264 1920×1080 streams
-- Portable executable metadata reports MediaLab 0.0.6
+- Real rtos_ch0_before.h265 and rtos_ch0.h265 via desktop IPC, FFprobe and D3D11VA playback proxy
+- Single/Compare video and frame charts simultaneously visible; current-frame highlight and paused seeking
+- Responsive layout, divider adjustment, Play Both/Pause Both, independent playback and return-home cleanup
+- Production Web/static build, rendered HTML tests and frontend strict TypeScript check
+- Packaged static Web delivery tested with both real HEVC samples, decoded canvases and synchronized frame selection
+- YUV/RAW 10 unit tests; Y/U/V, Pixel Values Auto/Off, Zoom/Pan, Compare Sync View regressions
+- Real 2560x1440 HEIC extraction and decode
+- Packaged FFmpeg H264 D3D11VA decode and H265 CPU decode
+- Packaged app.asar source matches current renderer, stylesheet and HTML; metadata version 0.0.7
 
-Notes:
-- The executable is intentionally not code-signed with a publisher certificate.
-- RAW, YUV and HEIC processing is performed locally.
-- H.264/H.265 playback proxies are temporary and removed on normal exit.
+See UI_TEST_REPORT_v0.0.7.md for sample limitations and detailed validation.
+Electron locales remain zh-CN/en-US; maximum builder compression; no UPX.
+Media processing is local. FFmpeg playback proxies are removed on normal exit.

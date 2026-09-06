@@ -1,4 +1,4 @@
-# MediaLab Portable V0.0.6
+# MediaLab Portable V0.0.7
 
 Windows 64 位免安装的“视频码流与图像分析工具”。
 
@@ -9,6 +9,8 @@ Windows 64 位免安装的“视频码流与图像分析工具”。
 ## 功能
 
 - YUV / RAW / SYUV 自动识别、手动校正、预览与逐帧播放
+- YUV 支持 YUV/RGB、Y、U、V 显示；4:2:0 色度分量按原生半宽半高查看，保留原始采样值
+- YUV 高倍查看在每个 Y 像素格中叠加原始 Buffer 的 Y/U/V 值；按实际屏幕像素尺寸自动触发，只绘制可见范围，支持 Auto/Off 与 Compare
 - 自动解析样例 SYUV 文件头、2560×1440 分辨率、151 B 数据偏移与 NV21 格式
 - HEIC / HEIF 本地解码、缩放与全屏预览
 - PNG / JPEG / BMP / WebP 普通图片本地预览与 Compare
@@ -35,6 +37,8 @@ pnpm run dist
 ```
 
 便携程序输出到 `release/`。
+
+Release 使用简体中文/英文语言包白名单与 electron-builder 稳定最高压缩，不使用 UPX；Electron、FFmpeg/FFprobe、D3D11VA 和软件解码依赖不裁剪。
 
 ## 第三方组件
 

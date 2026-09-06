@@ -1,10 +1,12 @@
-# MediaLab Web V0.0.6
+# MediaLab Web V0.0.7
 
 本地优先的“视频码流与图像分析工具”。文件只在浏览器内存中处理，不上传到服务器。
 
 ## 功能
 
 - YUV / RAW / SYUV 自动识别、手动校正、预览与逐帧播放
+- YUV 支持 YUV/RGB、Y、U、V 显示；4:2:0 色度分量按原生半宽半高查看，保留原始采样值
+- YUV 高倍查看在每个 Y 像素格中叠加原始 Buffer 的 Y/U/V 值；按实际屏幕像素尺寸自动触发，只绘制可见范围，支持 Auto/Off 与 Compare
 - 自动读取本项目样例 SYUV 的文件头、分辨率、151 B 数据偏移并优先识别 NV21
 - HEIC / HEIF 本地解码与预览
 - PNG / JPEG / BMP / WebP 普通图片本地预览与 Compare

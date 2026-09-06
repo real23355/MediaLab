@@ -1,5 +1,11 @@
 (function () {
   const FORMATS = ["I420", "YV12", "NV12", "NV21", "YUY2", "UYVY", "GRAY8"];
+  const DISPLAY_MODES = [
+    { value: "rgb", label: "YUV / RGB" },
+    { value: "y", label: "Y" },
+    { value: "u", label: "U" },
+    { value: "v", label: "V" }
+  ];
   const COMMON_SIZES = [
     [3840, 2160], [2560, 1440], [2048, 1080], [1920, 1080], [1920, 1200],
     [1600, 900], [1440, 1080], [1280, 960], [1280, 720], [1024, 768],
@@ -94,6 +100,36 @@
     return [yv, u, v];
   }
 
+  function displaySize(width, height, format, mode) {
+    if (mode === "rgb" || mode === "y" || format === "GRAY8") return { width, height };
+    if (format === "YUY2" || format === "UYVY") return { width: Math.ceil(width / 2), height };
+    return { width: Math.ceil(width / 2), height: Math.ceil(height / 2) };
+  }
+
+  function sourceCoordinate(format, mode, x, y) {
+    if (mode === "rgb" || mode === "y" || format === "GRAY8") return { x, y };
+    if (format === "YUY2" || format === "UYVY") return { x: x * 2, y };
+    return { x: x * 2, y: y * 2 };
+  }
+
+  function displaySample(data, width, height, format, mode, x, y, offset = 0) {
+    const size = displaySize(width, height, format, mode);
+    const displayX = Math.max(0, Math.min(size.width - 1, Math.floor(x)));
+    const displayY = Math.max(0, Math.min(size.height - 1, Math.floor(y)));
+    const source = sourceCoordinate(format, mode, displayX, displayY);
+    const [yv, u, v] = pixel(data, width, height, format, source.x, source.y, offset);
+    return {
+      x: displayX,
+      y: displayY,
+      sourceX: source.x,
+      sourceY: source.y,
+      yValue: yv,
+      uValue: u,
+      vValue: v,
+      value: mode === "y" ? yv : mode === "u" ? u : mode === "v" ? v : undefined
+    };
+  }
+
   function contentScore(data, width, height, format) {
     const cols = Math.min(24, width);
     const rows = Math.min(18, height);
@@ -179,16 +215,26 @@
     return candidates.sort((a, b) => b.score - a.score).slice(0, 20);
   }
 
-  function renderYuv(data, width, height, format) {
-    const image = new ImageData(width, height);
+  function renderYuv(data, width, height, format, mode = "rgb") {
+    const size = displaySize(width, height, format, mode);
+    const image = new ImageData(size.width, size.height);
     const clamp = (value) => Math.max(0, Math.min(255, value));
-    for (let y = 0; y < height; y += 1) {
-      for (let x = 0; x < width; x += 1) {
-        const [yv, u, v] = pixel(data, width, height, format, x, y);
+    for (let y = 0; y < size.height; y += 1) {
+      for (let x = 0; x < size.width; x += 1) {
+        const source = sourceCoordinate(format, mode, x, y);
+        const [yv, u, v] = pixel(data, width, height, format, source.x, source.y);
+        const index = (y * size.width + x) * 4;
+        if (mode !== "rgb") {
+          const value = mode === "y" ? yv : mode === "u" ? u : v;
+          image.data[index] = value;
+          image.data[index + 1] = value;
+          image.data[index + 2] = value;
+          image.data[index + 3] = 255;
+          continue;
+        }
         const c = yv - 16;
         const d = u - 128;
         const e = v - 128;
-        const index = (y * width + x) * 4;
         image.data[index] = clamp((298 * c + 409 * e + 128) >> 8);
         image.data[index + 1] = clamp((298 * c - 100 * d - 208 * e + 128) >> 8);
         image.data[index + 2] = clamp((298 * c + 516 * d + 128) >> 8);
@@ -220,8 +266,11 @@
 
   window.MediaTools = {
     FORMATS,
+    DISPLAY_MODES,
     frameBytes,
     detectYuv,
+    displaySize,
+    displaySample,
     renderYuv,
     formatBytes,
     formatTime
