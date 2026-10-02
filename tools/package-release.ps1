@@ -34,4 +34,5 @@ foreach ($name in @('serve-static.ps1','启动本地网页版.cmd')) {
 Copy-Item -LiteralPath (Join-Path $projectRoot 'web/build/LOCAL_README.md') -Destination (Join-Path $webTarget 'README.md')
 Copy-Item -LiteralPath (Join-Path $projectRoot "desktop/release/MediaLab-Portable-$version.exe") -Destination $releaseRoot
 Compress-Archive -Path (Join-Path $webTarget '*') -DestinationPath (Join-Path $releaseRoot "MediaLab-Web-V$version.zip") -Force
+Compress-Archive -Path (Join-Path $releaseRoot 'MediaLab-Windows') -DestinationPath (Join-Path $releaseRoot "MediaLab-Windows-V$version.zip") -Force
 Write-Host "Packaged MediaLab $version. Previous output directories retained as -backup-$stamp."

@@ -1,5 +1,15 @@
-MediaLab Portable V0.0.6 — Third-party notices
+MediaLab Portable — Third-party notices
 
 FFmpeg / FFprobe
 The executables are invoked as independent processes.
 See ffmpeg/LICENSE.txt for the included build's license information.
+
+FFmpeg 9.0.2 essentials Windows build by Gyan (GPL-3.0).
+Pinned build URL and publisher SHA-256 are included in ffmpeg/build.json.
+https://www.gyan.dev/ffmpeg/builds/
+FFmpeg 9.0.2 source: https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+Build configuration: run resources/ffmpeg/ffmpeg.exe -buildconf
+Full GPL text: ffmpeg/GPL-3.0.txt
+
+FFprobe remains the pinned @ffprobe-installer/win32-x64 5.1.0 build.
+https://www.npmjs.com/package/@ffprobe-installer/win32-x64

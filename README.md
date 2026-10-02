@@ -2,7 +2,7 @@
 
 Tools for viewing and analyzing videos and images.
 
-当前仓库保存 **MediaLab V0.0.7** 的两套实现：
+当前仓库保存 **MediaLab V0.0.8** 的两套实现：
 
 - `web/`：本地优先的网页版本。
 - `desktop/`：Windows 免安装便携版源码，无需管理员权限。
@@ -33,9 +33,11 @@ pnpm start
 pnpm dist
 ```
 
-安装依赖时会从已锁定的 FFmpeg/FFprobe 安装器包中自动准备本地二进制文件。生成的程序位于 `desktop/release/`，运行权限为 `asInvoker`，不要求管理员权限。
+安装依赖时会准备固定版本的 FFmpeg 9.0.2（下载后校验构建方 SHA-256）与 FFprobe 5.1.0。Windows 构建使用系统 curl.exe / tar.exe。生成的程序位于 `desktop/release/`，不要求管理员权限。
 
-单文件便携版：`release/MediaLab-Portable-0.0.7.exe`；完整可运行目录：`release/MediaLab-Windows/`，入口为 `MediaLab.exe`。
+单文件便携版：`release/MediaLab-Portable-0.0.8.exe`；完整可运行目录：`release/MediaLab-Windows/`，入口为 `MediaLab.exe`。也提供目录版 ZIP，解压后直接运行，启动最快。
+
+便携 EXE 首次将运行组件释放到 `%LOCALAPPDATA%\MediaLab\runtime\<版本-内容指纹>`，后续启动复用。不安装服务、不需要管理员权限；这是程序运行组件缓存，不是用户媒体解析缓存。返回首页会取消解析、清除媒体会话与播放临时文件，同一文件再次打开重新解析；不会删除运行组件导致下次启动再次解压。
 
 ## 主要功能
 
@@ -50,5 +52,7 @@ pnpm dist
 - 单文件打开后可继续拖入同一媒体大类文件，总文件量上限 4.2 GB。
 - HEIC 与 PNG/JPEG/BMP/WebP 普通图片解析。
 - 文件在本机处理，不上传媒体内容。
+- 视频解析显示阶段进度、约百分比和处理帧数；Web 结构分析在 Worker 中执行。
+- NVIDIA 优先 CUDA 解码 → NVENC 编码；按显卡尝试 QSV/AMF，失败逐级回退 D3D11VA / CPU。
 
-Windows Release 仅保留简体中文和英文 Chromium 语言包，并使用稳定的最高打包压缩；Codec、GPU 硬解和 CPU fallback 组件保持完整。体积结果见 `SIZE_OPTIMIZATION_REPORT.md`。
+Windows Release 仅保留简体中文和英文 Chromium 语言包，Codec、GPU 硬解和 CPU fallback 组件保持完整。V0.0.8 启动器使用标准 NSIS/zlib，优先提高首次解压速度，不使用 UPX；较 V0.0.7 下载体积有所增大。当前实测与回归见 `PERFORMANCE_TEST_REPORT_v0.0.8.md`，历史瘦身结果见 `SIZE_OPTIMIZATION_REPORT.md`。

@@ -1,6 +1,6 @@
 {
   "name": "medialab-portable",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "Portable YUV, Bayer RAW, HEIC, H.264 and H.265 diagnostic tool for Windows",
   "main": "src/main.cjs",
   "author": "MediaLab",
@@ -10,10 +10,9 @@
     "postinstall": "node scripts/prepare-ffmpeg.cjs",
     "prepare:ffmpeg": "node scripts/prepare-ffmpeg.cjs",
     "start": "electron .",
-    "dist": "node scripts/prepare-ffmpeg.cjs && electron-builder --win portable --x64"
+    "dist": "node scripts/prepare-ffmpeg.cjs && electron-builder --win portable --x64 && node scripts/build-cached-portable.cjs"
   },
   "devDependencies": {
-    "@ffmpeg-installer/win32-x64": "4.1.0",
     "@ffprobe-installer/win32-x64": "5.1.0",
     "electron": "43.2.0",
     "electron-builder": "26.15.3"
@@ -44,6 +43,14 @@
       {
         "from": "ffmpeg/LICENSE.txt",
         "to": "ffmpeg/LICENSE.txt"
+      },
+      {
+        "from": "ffmpeg/GPL-3.0.txt",
+        "to": "ffmpeg/GPL-3.0.txt"
+      },
+      {
+        "from": "ffmpeg/build.json",
+        "to": "ffmpeg/build.json"
       },
       {
         "from": "THIRD_PARTY_NOTICES.txt",

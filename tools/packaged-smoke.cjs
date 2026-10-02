@@ -22,7 +22,7 @@ async function command(url,method,params={}) {
   await delay(500);
   const result=await command(page.webSocketDebuggerUrl,'Runtime.evaluate',{expression:'JSON.stringify({title:document.title,version:document.querySelector(".brand b").textContent,home:!!document.querySelector("#home"),ipc:typeof window.desktop.probeStream})',returnByValue:true});
   const value=JSON.parse(result.result.value);
-  assert.equal(value.version,'V0.0.7'); assert.equal(value.ipc,'function'); assert.ok(value.home);
+  assert.equal(value.version,`V${require('../desktop/package.json').version}`); assert.equal(value.ipc,'function'); assert.ok(value.home);
   process.stdout.write(JSON.stringify(value)+'\n');
   await command(page.webSocketDebuggerUrl,'Runtime.evaluate',{expression:'window.close()'}).catch(()=>{});
 })().catch(e=>{process.stderr.write(e.stack+'\n');process.exitCode=1}).finally(()=>{child.kill();});

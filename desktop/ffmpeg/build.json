@@ -1,0 +1,9 @@
+{
+  "version": "9.0.2",
+  "archive": "ffmpeg-9.0.2-essentials_build.7z",
+  "directory": "ffmpeg-9.0.2-essentials_build",
+  "url": "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.7z",
+  "size": 35430500,
+  "sha256": "4705843ccaaf54257c16ad90f3e952ece33c17df964ecf7bfdbb0f49c7171077",
+  "checksumSource": "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.7z.sha256"
+}

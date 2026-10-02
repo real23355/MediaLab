@@ -398,9 +398,14 @@ interface NalUnit {
   type: number;
 }
 
-function splitAnnexB(data: Uint8Array, kind: "h264" | "h265") {
+function splitAnnexB(data: Uint8Array, kind: "h264" | "h265", onProgress?: (percent: number) => void) {
   const starts: Array<{ start: number; payloadStart: number }> = [];
+  let nextProgress = 0;
   for (let i = 0; i + 3 < data.length; i += 1) {
+    if (onProgress && i >= nextProgress) {
+      onProgress(i / data.length * 70);
+      nextProgress = i + 1024 * 1024;
+    }
     if (data[i] !== 0 || data[i + 1] !== 0) continue;
     if (data[i + 2] === 1) {
       starts.push({ start: i, payloadStart: i + 3 });
@@ -638,8 +643,9 @@ const H265_NAL_NAMES: Record<number, string> = {
 export function analyzeStream(
   data: Uint8Array,
   kind: "h264" | "h265",
+  onProgress?: (percent: number) => void,
 ): StreamAnalysis {
-  const nals = splitAnnexB(data, kind);
+  const nals = splitAnnexB(data, kind, onProgress);
   if (!nals.length) throw new Error("没有找到 Annex-B 起始码（00 00 01）");
 
   const histogram = new Map<number, number>();
@@ -670,7 +676,8 @@ export function analyzeStream(
     isKey = false;
   };
 
-  nals.forEach((nal) => {
+  nals.forEach((nal, index) => {
+    if (index % 256 === 0) onProgress?.(70 + index / nals.length * 29);
     const vcl = kind === "h264" ? nal.type >= 1 && nal.type <= 5 : nal.type <= 31;
     const aud = kind === "h264" ? nal.type === 9 : nal.type === 35;
     const slice = vcl

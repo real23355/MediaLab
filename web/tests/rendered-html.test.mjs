@@ -51,13 +51,13 @@ test("ships product metadata and no starter preview", async () => {
   await access(new URL("lib/raw.ts", root));
 });
 
-test("ships V0.0.7 compare and append controls", async () => {
+test("ships V0.0.8 compare and append controls", async () => {
   const [source, packageJson] = await Promise.all([
     readFile(new URL("../app/MediaLab.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
-  assert.match(source, /V0\.0\.7/);
-  assert.match(packageJson, /"version": "0\.0\.7"/);
+  assert.match(source, /V0\.0\.8/);
+  assert.match(packageJson, /"version": "0\.0\.8"/);
   assert.match(source, /Compare 图片对比/);
   assert.match(source, /Play Both/);
   assert.match(source, /Pause Both/);
@@ -84,5 +84,5 @@ test("preserves YUV RGB and Y/U/V component viewing", async () => {
   assert.match(media, /label: "YUV \/ RGB"/);
   assert.match(media, /mode === "u"/);
   assert.match(media, /format === "NV12" \? \[first, second\] : \[second, first\]/);
-  assert.match(packageJson, /"version": "0\.0\.7"/);
+  assert.match(packageJson, /"version": "0\.0\.8"/);
 });

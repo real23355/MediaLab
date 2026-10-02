@@ -102,6 +102,20 @@ function clearDocuments() {
   state.compareViews = { left: null, right: null };
 }
 
+let resetSessionPromise = Promise.resolve();
+let activeParseJob = null;
+function renderParseProgress(update) {
+  if (!activeParseJob || update.jobId !== activeParseJob.id || activeParseJob.epoch !== state.sessionToken) return;
+  const job = activeParseJob;
+  show($("#parse-progress"), true);
+  $("#progress-title").textContent = `${job.index + 1}/${job.count} · ${job.name} · ${update.phase}`;
+  if (update.percent == null) $("#progress-bar").removeAttribute("value");
+  else $("#progress-bar").value = (job.index + update.percent / 100) / job.count * 100;
+  $("#progress-number").textContent = update.percent == null ? "处理中" : `约 ${Math.round($("#progress-bar").value)}%`;
+  $("#progress-detail").textContent = `${update.detail || ""} · 已用 ${Math.round((performance.now() - job.started) / 1000)} 秒（阶段进度估算）`;
+}
+window.desktop.onProgress?.(renderParseProgress);
+
 function returnHome() {
   state.sessionToken += 1;
   clearDocuments();
@@ -120,6 +134,20 @@ function returnHome() {
   show($("#new-file"), false);
   show($("#add-file"), false);
   show($("#compare-mode"), false);
+  $("#compare-mode").textContent = "Compare";
+  activeParseJob = null;
+  show($("#parse-progress"), false);
+  $("#parse-files").disabled = false;
+  $("#parse-files").textContent = "开始解析";
+  state.syncView = true;
+  state.syncPlayback = true;
+  state.compareRenderToken += 1;
+  state.renderToken += 1;
+  $$("#file-tabs, #stream-file-tabs, #frame-chart, #frame-rows, #image-compare").forEach(element => { element.innerHTML = ""; });
+  $$("#image-layout canvas").forEach(canvas => { canvas.width = 1; canvas.height = 1; });
+  $("#heic-image").removeAttribute("src");
+  notice("", "working", true);
+  resetSessionPromise = window.desktop.resetSession?.().catch(error => toast(`清理临时文件失败：${error.message}`)) || Promise.resolve();
   show($("#restart-app"), false);
   show($("#toast"), false);
 }
@@ -287,6 +315,8 @@ async function parsePendingFiles() {
   button.disabled = true;
   button.textContent = "正在解析…";
   try {
+    await resetSessionPromise;
+    if (sessionToken !== state.sessionToken) return;
     if (streamFiles.length) {
       show($("#type-screen"), false);
       show($("#workspace"), true);
@@ -295,7 +325,12 @@ async function parsePendingFiles() {
       $("#workspace").classList.remove("image-mode");
       $("#workspace").classList.add("stream-mode");
       const streams = [];
-      for (const file of streamFiles) streams.push(await createStreamDocument(file, file.kind));
+      for (const [index, file] of streamFiles.entries()) {
+        activeParseJob = { id: `${sessionToken}-${file.id}`, epoch: sessionToken, index, count: streamFiles.length, name: file.name, started: performance.now() };
+        renderParseProgress({ jobId: activeParseJob.id, phase: "准备读取文件", percent: 0 });
+        streams.push(await createStreamDocument(file, file.kind, activeParseJob.id, sessionToken));
+        if (sessionToken !== state.sessionToken) return;
+      }
       state.streams.push(...streams);
       state.pending = [];
       ensureCompareSelection(state.streams);
@@ -333,10 +368,14 @@ async function parsePendingFiles() {
     if (state.compareMode) await renderImageCompare();
     else await showActiveDocument();
   } catch (error) {
-    toast(`解析失败：${error.message}`);
+    if (sessionToken === state.sessionToken) toast(`解析失败：${error.message}`);
   } finally {
-    button.disabled = false;
-    button.textContent = "开始解析";
+    if (sessionToken === state.sessionToken) {
+      activeParseJob = null;
+      show($("#parse-progress"), false);
+      button.disabled = false;
+      button.textContent = "开始解析";
+    }
   }
 }
 
@@ -1381,9 +1420,10 @@ function notice(message, type = "working", stream = false) {
   show(element, Boolean(message));
 }
 
-async function createStreamDocument(file, kind) {
+async function createStreamDocument(file, kind, jobId, epoch = state.sessionToken) {
   notice(`正在分析 ${file.name}…`, "working", true);
-  const analysis = await window.desktop.probeStream(file.path, kind);
+  const analysis = await window.desktop.probeStream(file.path, kind, jobId);
+  if (epoch !== state.sessionToken) throw new Error("解析已取消");
   const doc = {
     id: file.id,
     kind,
@@ -1396,11 +1436,14 @@ async function createStreamDocument(file, kind) {
     proxyError: ""
   };
   try {
-    const result = await window.desktop.createProxy(file.path, kind, doc.fps);
+    const result = await window.desktop.createProxy(file.path, kind, doc.fps, analysis.frames.length, jobId);
+    if (epoch !== state.sessionToken) throw new Error("解析已取消");
     doc.proxyUrl = typeof result === "string" ? result : result.url;
     doc.decoder = typeof result === "string" ? "Software Decode" : result.decoder;
     doc.hardware = Boolean(result.hardware);
+    doc.encoder = result.encoder;
   } catch (error) {
+    if (epoch !== state.sessionToken) throw error;
     doc.decoder = "仅分析";
     doc.proxyError = error.message;
   }
@@ -1428,7 +1471,7 @@ function activateStreamDocument(doc) {
   if (doc.proxyUrl) {
     video.src = doc.proxyUrl;
     video.load();
-    $("#proxy-status").textContent = `${doc.kind.toUpperCase()} | ${doc.analysis.width || "—"}×${doc.analysis.height || "—"} | ${doc.decoder}`;
+    $("#proxy-status").textContent = `${doc.kind.toUpperCase()} | ${doc.analysis.width || "—"}×${doc.analysis.height || "—"} | ${doc.decoder}${doc.encoder ? ` → ${doc.encoder}` : ""}`;
     $("#play-badge").textContent = doc.hardware ? "GPU 硬解" : "软件解码";
     $("#play-badge").className = `badge ready ${doc.hardware ? "hardware" : "software"}`;
     show(placeholder, false);

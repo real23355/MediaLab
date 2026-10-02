@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  analyzeStream,
   bytesForYuvFrame,
   detectKind,
   detectYuv,
@@ -59,7 +58,7 @@ declare global {
   }
 }
 
-const VERSION = "V0.0.7";
+const VERSION = "V0.0.8";
 const PAGE_SIZE = 100;
 const IMAGE_LIMIT = 10;
 const TOTAL_FILE_LIMIT = Math.floor(4.2 * 1024 * 1024 * 1024);
@@ -208,6 +207,9 @@ export default function MediaLab() {
   const decoder = useRef<VideoDecoder | null>(null);
   const playbackTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const decodeRun = useRef(0);
+  const parseEpoch = useRef(0);
+  const cancelParse = useRef<(() => void) | null>(null);
+  const [parseProgress, setParseProgress] = useState<{ name: string; phase: string; percent: number } | null>(null);
 
   const [pendingItems, setPendingItems] = useState<PendingItem[]>([]);
   const [imageDocs, setImageDocs] = useState<ImageDocument[]>([]);
@@ -292,6 +294,13 @@ export default function MediaLab() {
   }, [stopStreamPlayback]);
 
   const returnHome = useCallback(() => {
+    parseEpoch.current += 1;
+    cancelParse.current?.();
+    cancelParse.current = null;
+    setBusy(false);
+    setParseProgress(null);
+    setSyncView(true);
+    setSyncPlayback(true);
     stopStreamPlayback();
     imageDocs.forEach((doc) => {
       if (doc.kind === "heic" || doc.kind === "image") URL.revokeObjectURL(doc.url);
@@ -397,12 +406,29 @@ export default function MediaLab() {
 
     setBusy(true);
     setError("");
+    const epoch = parseEpoch.current;
+    const checkEpoch = () => { if (epoch !== parseEpoch.current) throw new Error("解析已取消"); };
+    const newUrls: string[] = [];
     try {
       if (streamItems.length) {
         const docs: StreamDocument[] = [];
-        for (const item of streamItems) {
-          const data = new Uint8Array(await item.file.arrayBuffer());
-          const analysis = analyzeStream(data, item.kind as "h264" | "h265");
+        for (const [index, item] of streamItems.entries()) {
+          checkEpoch();
+          setParseProgress({ name: item.file.name, phase: "读取文件", percent: index / streamItems.length * 100 });
+          const { bytes: data, analysis } = await new Promise<{ bytes: Uint8Array; analysis: StreamAnalysis }>((resolve, reject) => {
+            const worker = new Worker(new URL("../lib/stream-worker.ts", import.meta.url), { type: "module" });
+            const cleanup = () => { worker.terminate(); cancelParse.current = null; };
+            cancelParse.current = () => { cleanup(); reject(new Error("解析已取消")); };
+            worker.onerror = event => { cleanup(); reject(new Error(event.message)); };
+            worker.onmessage = ({ data: result }) => {
+              if (epoch !== parseEpoch.current) return;
+              if (result.error) { cleanup(); reject(new Error(result.error)); return; }
+              setParseProgress({ name: item.file.name, phase: result.phase, percent: (index + result.percent / 100) / streamItems.length * 100 });
+              if (result.analysis) { cleanup(); resolve(result); }
+            };
+            worker.postMessage({ file: item.file, kind: item.kind });
+          });
+          checkEpoch();
           docs.push({
             id: item.id,
             kind: item.kind as "h264" | "h265",
@@ -422,6 +448,7 @@ export default function MediaLab() {
 
       const docs: ImageDocument[] = [];
       for (const item of pendingItems) {
+        checkEpoch();
         if (item.kind === "yuv") {
           const data = new Uint8Array(await item.file.arrayBuffer());
           const candidates = detectYuv(data, item.file.name);
@@ -498,6 +525,7 @@ export default function MediaLab() {
             blob = Array.isArray(converted) ? converted[0] : converted;
           }
           const url = URL.createObjectURL(blob);
+          newUrls.push(url);
           const size = decodedSize ?? await loadImageSize(url);
           docs.push({
             id: item.id,
@@ -508,19 +536,22 @@ export default function MediaLab() {
           });
         } else {
           const url = URL.createObjectURL(item.file);
+          newUrls.push(url);
           const size = await loadImageSize(url);
           docs.push({ id: item.id, kind: "image", file: item.file, url, ...size });
         }
       }
+      checkEpoch();
       setImageDocs((current) => [...current, ...docs]);
       setActiveDocId(docs[0]?.id ?? "");
       setLeftId((value) => value || imageDocs[0]?.id || docs[0]?.id || "");
       setRightId((value) => value || imageDocs[1]?.id || docs[1]?.id || docs[0]?.id || "");
       setPendingItems([]);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "文件解析失败");
+      newUrls.forEach(url => URL.revokeObjectURL(url));
+      if (epoch === parseEpoch.current) setError(caught instanceof Error ? caught.message : "文件解析失败");
     } finally {
-      setBusy(false);
+      if (epoch === parseEpoch.current) { setBusy(false); setParseProgress(null); }
     }
   };
 
@@ -854,6 +885,12 @@ export default function MediaLab() {
           <button className="button subtle" type="button" onClick={returnHome}>返回首页</button>
         </div>}
       </header>
+
+      {parseProgress && <section className="parse-progress" aria-live="polite">
+        <div><strong>{parseProgress.name} · {parseProgress.phase}</strong><span>{Math.floor(parseProgress.percent)}%</span></div>
+        <progress max={100} value={parseProgress.percent} aria-label="文件解析进度" />
+        <small>按文件读取量与帧结构扫描阶段估算</small>
+      </section>}
 
       {!hasContent && (
         <section className={`landing ${dragging ? "dragging" : ""}`} role="button" tabIndex={0} aria-label="拖入媒体文件或点击选择文件"

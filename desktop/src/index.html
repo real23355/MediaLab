@@ -15,7 +15,7 @@
       <button id="brand-home" class="brand brand-button">
         <span class="brand-mark"><i></i><i></i><i></i></span>
         <span>MediaLab——视频码流与图像分析工具</span>
-        <b>V0.0.7</b>
+        <b>V0.0.8</b>
       </button>
       <div class="topbar-actions">
         <button id="add-file" class="ghost hidden">＋ 追加文件</button>
@@ -25,6 +25,11 @@
       </div>
     </header>
 
+    <section id="parse-progress" class="parse-progress hidden" aria-live="polite">
+      <div><strong id="progress-title">正在解析</strong><span id="progress-number"></span></div>
+      <progress id="progress-bar" max="100" value="0" aria-label="文件解析进度"></progress>
+      <small id="progress-detail"></small>
+    </section>
     <main>
       <section id="home" class="home" tabindex="0" role="button" aria-label="拖入媒体文件或点击选择文件">
         <div class="hero">

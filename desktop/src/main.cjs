@@ -12,6 +12,30 @@ app.commandLine.appendSwitch("disable-features", "OutOfBlinkCors");
 
 let mainWindow;
 const tempOutputs = new Set();
+const children = new Map();
+let generation = 0;
+let encoderChoice = null;
+
+function checkSession(epoch) {
+  if (epoch !== generation) throw new Error("解析已取消");
+}
+
+function progress(event, jobId, phase, percent, detail = "") {
+  if (!event.sender.isDestroyed()) event.sender.send("parse-progress", { jobId, phase, percent, detail });
+}
+
+async function clearMediaSession() {
+  generation += 1;
+  encoderChoice = null;
+  const outputs = [...tempOutputs];
+  tempOutputs.clear();
+  const pending = [...children.entries()];
+  for (const [child] of pending) child.kill();
+  await Promise.allSettled(pending.map(([, done]) => done));
+  await Promise.allSettled(outputs.map(file => fsp.unlink(file)));
+  return { cleared: outputs.length };
+}
+ipcMain.handle("reset-session", clearMediaSession);
 
 function toolPath(name) {
   if (app.isPackaged) {
@@ -22,17 +46,22 @@ function toolPath(name) {
 
 function runTool(executable, args, options = {}) {
   return new Promise((resolve, reject) => {
+    const { onStdout, ...spawnOptions } = options;
     const child = spawn(executable, args, {
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
-      ...options,
+      ...spawnOptions,
     });
     const stdout = [];
     const stderr = [];
-    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    let closed;
+    children.set(child, new Promise(resolve => { closed = resolve; }));
+    child.stdout.on("data", (chunk) => { stdout.push(chunk); onStdout?.(chunk); });
     child.stderr.on("data", (chunk) => stderr.push(chunk));
     child.on("error", reject);
     child.on("close", (code) => {
+      children.delete(child);
+      closed();
       const out = Buffer.concat(stdout);
       const err = Buffer.concat(stderr).toString("utf8");
       if (code === 0) resolve({ stdout: out, stderr: err });
@@ -110,7 +139,9 @@ ipcMain.handle("read-slice", async (_event, filePath, start, length) => {
 });
 
 ipcMain.handle("decode-heic", async (_event, filePath) => {
+  const epoch = generation;
   const source = await fsp.readFile(filePath);
+  checkSession(epoch);
   const extracted = extractHeicFrame(source);
   const base = path.basename(filePath, path.extname(filePath)).replace(/[^\w.-]+/g, "_");
   const input = path.join(
@@ -120,6 +151,7 @@ ipcMain.handle("decode-heic", async (_event, filePath) => {
   tempOutputs.add(input);
   try {
     await fsp.writeFile(input, extracted.annexB);
+    checkSession(epoch);
     const { stdout } = await runTool(toolPath("ffmpeg"), [
       "-hide_banner",
       "-loglevel", "error",
@@ -130,6 +162,7 @@ ipcMain.handle("decode-heic", async (_event, filePath) => {
       "-c:v", "png",
       "pipe:1"
     ]);
+    checkSession(epoch);
     return {
       bytes: stdout,
       width: extracted.width,
@@ -145,11 +178,17 @@ ipcMain.handle("decode-heic", async (_event, filePath) => {
   }
 });
 
-ipcMain.handle("probe-stream", async (_event, filePath, kind) => {
+ipcMain.handle("probe-stream", async (event, filePath, kind, jobId) => {
+  const epoch = generation;
+  const size = (await fsp.stat(filePath)).size;
+  checkSession(epoch);
+  progress(event, jobId, "分析帧结构", 0);
   const inputFormat = kind === "h265" ? "hevc" : "h264";
   const args = [
     "-v", "error",
     "-f", inputFormat,
+    "-skip_loop_filter", "all",
+    "-skip_idct", "all",
     "-show_entries",
     "stream=index,codec_name,profile,level,width,height,pix_fmt,r_frame_rate,avg_frame_rate,nb_read_frames:format=size,format_name:frame=key_frame,pict_type,pkt_size,pkt_pos,best_effort_timestamp_time,coded_picture_number,display_picture_number",
     "-count_frames",
@@ -157,7 +196,21 @@ ipcMain.handle("probe-stream", async (_event, filePath, kind) => {
     "-of", "json",
     filePath
   ];
-  const { stdout } = await runTool(toolPath("ffprobe"), args);
+  let tail = "";
+  let last = 0;
+  const { stdout } = await runTool(toolPath("ffprobe"), args, {
+    onStdout(chunk) {
+      tail += chunk.toString("utf8");
+      const positions = [...tail.matchAll(/"pkt_pos"\s*:\s*"?(\d+)/g)];
+      tail = tail.slice(-100);
+      if (positions.length && Date.now() - last > 120 && epoch === generation) {
+        last = Date.now();
+        progress(event, jobId, "分析帧结构", Math.min(44, Number(positions.at(-1)[1]) / Math.max(1, size) * 45), "按文件读取位置估算");
+      }
+    }
+  });
+  checkSession(epoch);
+  progress(event, jobId, "帧结构分析完成", 45);
   const parsed = JSON.parse(stdout.toString("utf8"));
   const stream = parsed.streams?.[0] || {};
   const frames = (parsed.frames || [])
@@ -187,7 +240,8 @@ ipcMain.handle("probe-stream", async (_event, filePath, kind) => {
   };
 });
 
-ipcMain.handle("create-proxy", async (_event, filePath, kind, fps) => {
+ipcMain.handle("create-proxy", async (event, filePath, kind, fps, frameCount = 0, jobId) => {
+  const epoch = generation;
   const inputFormat = kind === "h265" ? "hevc" : "h264";
   const base = path.basename(filePath, path.extname(filePath)).replace(/[^\w.-]+/g, "_");
   const output = path.join(
@@ -195,44 +249,73 @@ ipcMain.handle("create-proxy", async (_event, filePath, kind, fps) => {
     `MediaLab-${base}-${Date.now()}-${Math.random().toString(16).slice(2)}.mp4`
   );
   tempOutputs.add(output);
-  const proxyArgs = (hardware) => [
+  let lastProgress = 45;
+  let tail = "";
+  const monitor = chunk => {
+    tail += chunk.toString("utf8");
+    const lines = tail.split(/\r?\n/); tail = lines.pop();
+    for (const line of lines) {
+      const match = /^frame=(\d+)/.exec(line);
+      if (match && epoch === generation) {
+        lastProgress = Math.max(lastProgress, Math.min(99, 45 + Number(match[1]) / Math.max(1, frameCount) * 54));
+        progress(event, jobId, "生成播放画面", frameCount ? lastProgress : null, `已处理 ${match[1]} 帧`);
+      }
+    }
+  };
+  const proxyArgs = (accel, encoder) => [
     "-hide_banner",
     "-loglevel", "error",
-    ...(hardware ? ["-hwaccel", "d3d11va"] : []),
+    ...(accel ? ["-hwaccel", accel] : []),
+    ...(accel === "cuda" ? ["-hwaccel_output_format", "cuda"] : []),
     "-fflags", "+genpts",
     "-r", String(Math.max(1, Number(fps) || 25)),
     "-f", inputFormat,
     "-i", filePath,
     "-an",
-    "-c:v", "libx264",
-    "-preset", "ultrafast",
-    "-crf", "20",
-    "-pix_fmt", "yuv420p",
+    "-c:v", encoder,
+    ...(encoder === "h264_nvenc" ? ["-preset", "p1", "-rc", "constqp", "-qp", "20"] :
+      encoder === "h264_qsv" ? ["-preset", "veryfast", "-global_quality", "20"] :
+      encoder === "h264_amf" ? ["-quality", "speed", "-rc", "cqp", "-qp_i", "20", "-qp_p", "20"] :
+      ["-preset", "ultrafast", "-crf", "20"]),
+    "-bf", "0",
+    ...(accel === "cuda" ? [] : ["-pix_fmt", "yuv420p"]),
     "-movflags", "+faststart",
+    "-progress", "pipe:1", "-nostats",
     "-y",
     output
   ];
-  try {
-    await runTool(toolPath("ffmpeg"), proxyArgs(true));
-    return {
-      url: pathToFileURL(output).toString(),
-      decoder: "Hardware Decode: D3D11VA",
-      hardware: true
-    };
-  } catch (hardwareError) {
+  const gpu = await app.getGPUInfo("basic").catch(() => ({}));
+  checkSession(epoch);
+  const vendors = (gpu.gpuDevice || []).map(device => device.vendorId);
+  const encoders = [vendors.includes(0x10de) && "h264_nvenc", vendors.includes(0x8086) && "h264_qsv", vendors.includes(0x1002) && "h264_amf"].filter(Boolean);
+  const attempts = [];
+  if (encoderChoice?.encoder !== "libx264" && encoderChoice) attempts.push(encoderChoice);
+  if (vendors.includes(0x10de)) attempts.push({ accel: "cuda", encoder: "h264_nvenc" });
+  attempts.push(...encoders.map(encoder => ({ accel: "d3d11va", encoder })));
+  attempts.push({ accel: "d3d11va", encoder: "libx264" }, { accel: null, encoder: "libx264" });
+  const tried = new Set();
+  let failure;
+  for (const attempt of attempts) {
+    const key = JSON.stringify(attempt);
+    if (tried.has(key)) continue;
+    tried.add(key);
+    checkSession(epoch);
+    tail = "";
+    progress(event, jobId, failure ? "切换备用解码/编码方案" : "准备播放画面", lastProgress, `${attempt.accel?.toUpperCase() || "CPU"} → ${attempt.encoder}`);
     try {
-      await fsp.unlink(output);
-    } catch {
-      // A failed or absent partial output is safe to ignore.
+      await runTool(toolPath("ffmpeg"), proxyArgs(attempt.accel, attempt.encoder), { onStdout: monitor });
+      checkSession(epoch);
+      encoderChoice = attempt;
+      progress(event, jobId, "解析完成", 100, attempt.encoder);
+      return { url: pathToFileURL(output).toString(), decoder: attempt.accel ? `Hardware Decode: ${attempt.accel.toUpperCase()}` : "Software Decode", hardware: Boolean(attempt.accel), encoder: attempt.encoder, fallbackReason: failure?.message };
+    } catch (error) {
+      checkSession(epoch);
+      failure = error;
     }
-    await runTool(toolPath("ffmpeg"), proxyArgs(false));
-    return {
-      url: pathToFileURL(output).toString(),
-      decoder: "Software Decode",
-      hardware: false,
-      fallbackReason: hardwareError.message
-    };
   }
+  await fsp.unlink(output).catch(() => {});
+  tempOutputs.delete(output);
+  throw failure;
 });
 
 ipcMain.handle("app-version", () => app.getVersion());
@@ -253,6 +336,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  for (const child of children.keys()) child.kill();
   for (const output of tempOutputs) {
     try {
       fs.unlinkSync(output);
