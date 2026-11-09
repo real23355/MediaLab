@@ -119,6 +119,7 @@ function renderParseProgress(update) {
 window.desktop.onProgress?.(renderParseProgress);
 
 function returnHome() {
+  cancelRawConfig();
   window.MLJobs.cancel();
   state.sessionToken += 1;
   clearDocuments();
@@ -373,7 +374,7 @@ async function parsePendingFiles() {
     if (state.compareMode) await renderImageCompare();
     else await showActiveDocument();
   } catch (error) {
-    if (sessionToken === state.sessionToken) toast(`解析失败：${error.message}`);
+    if (sessionToken === state.sessionToken) toast(error.code==="RAW_CONFIG_CANCELLED" ? "已取消 RAW 参数设置。文件仍在待解析列表中，准备好后可以再次尝试。" : `暂时没能打开文件：${error.message}`);
   } finally {
     if (sessionToken === state.sessionToken) {
       activeParseJob = null;
@@ -422,7 +423,17 @@ async function createRawDocument(file) {
   }
   const bytes = await window.MLJobs.read(file,0,file.size);
   if (bytes.byteLength !== file.size) throw new Error(`${file.name} 未能完整读取。`);
-  const {config,values,levels} = await window.MLJobs.run({action:"parse-raw",bytes,name:file.name},file.name);
+  const epoch=state.sessionToken;
+  let parsed=await window.MLJobs.run({action:"parse-raw",bytes,name:file.name},file.name);
+  while(parsed.needsConfig){
+    if(epoch!==state.sessionToken)throw Error("解析已取消");
+    const config=await requestRawConfig(file,parsed.config,parsed.message);
+    if(epoch!==state.sessionToken)throw Error("解析已取消");
+    if(!config){const error=new Error("已取消 RAW 参数设置");error.code="RAW_CONFIG_CANCELLED";throw error;}
+    try{parsed=await window.MLJobs.run({action:"parse-raw",bytes,config,name:file.name},file.name);}
+    catch(error){parsed={needsConfig:true,config,message:`按这些参数还没能打开图像，请再检查一下。${error.message}`};}
+  }
+  const {config,values,levels}=parsed;
   return {
     id: file.id,
     kind: "raw",

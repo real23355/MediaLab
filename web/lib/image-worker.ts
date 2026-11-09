@@ -1,5 +1,5 @@
 import {detectYuv,renderYuvFrame} from "./media";
-import {detectRaw,decodeRaw,rawLevels,renderRawPreview} from "./raw";
+import {detectRaw,decodeRaw,rawLevels,renderRawPreview,bytesForRawFrame} from "./raw";
 self.onmessage = async ({data:t}) => {
   const progress = (percent:number,phase:string) => self.postMessage({percent,phase});
   try {
@@ -13,6 +13,10 @@ self.onmessage = async ({data:t}) => {
     if(t.action === "parse-yuv") result = {bytes:t.bytes,candidates:detectYuv(t.bytes,t.file.name)};
     if(t.action === "parse-raw") {
       const config=t.config||detectRaw(t.bytes.subarray(0,2*1024*1024),t.bytes.length,t.file.name);
+      if(!t.config && (config.needsManual || bytesForRawFrame(config.width,config.height,config.bitDepth,config.packing)!==t.bytes.length)){
+        self.postMessage({percent:100,result:{needsConfig:true,bytes:t.bytes,config}},{transfer:[t.bytes.buffer]});
+        return;
+      }
       const values=decodeRaw(t.bytes,config,p=>progress(40+p*.4,"解包 RAW"));progress(85,"统计 RAW");
       result={bytes:t.bytes,config,values,levels:rawLevels(values,config.bitDepth)};
     }

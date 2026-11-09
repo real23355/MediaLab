@@ -72,7 +72,8 @@
     return {
       width, height, bitDepth, bayer: hints.bayer || "RGGB", packing,
       frameBytes: frameBytes(width, height, bitDepth, packing),
-      reason: "无法由文件大小确认，请手动校正参数"
+      reason: "无法由文件大小确认，请手动校正参数",
+      needsManual: true
     };
   }
 

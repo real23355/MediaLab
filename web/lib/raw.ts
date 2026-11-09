@@ -3,6 +3,7 @@ export type RawPacking = "MIPI_RAW10" | "UNPACKED16_LE" | "UNPACKED16_BE";
 export type RawViewMode = "gray" | "rgb";
 
 export interface RawConfig {
+  needsManual?: boolean;
   width: number;
   height: number;
   bitDepth: number;
@@ -133,6 +134,7 @@ export function detectRaw(
     packing: fallbackPacking,
     frameBytes: bytesForRawFrame(fallbackWidth, fallbackHeight, bitDepth, fallbackPacking),
     reason: "无法由文件大小确认，请手动校正参数",
+    needsManual: true,
   };
 }
 

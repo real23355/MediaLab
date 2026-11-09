@@ -1077,3 +1077,18 @@ body:has(.stream-workspace), body:has(.stream-mode:not(.hidden)) { overflow: hid
 .original-stage img,.original-stage canvas { display:block; max-width:none; image-rendering:pixelated; }
 .original-dialog progress { width:100%; accent-color:#397760; }
 .original-pixel { font:13px monospace; min-height:20px; }
+.raw-config-dialog { width:min(560px,calc(100vw - 36px)); max-height:90vh; overflow:auto; border:1px solid #c6d6cc; border-radius:14px; padding:24px; background:#fff; color:#17211f; box-shadow:0 12px 50px #0003; }
+.raw-config-dialog::backdrop { background:#10251d99; }
+.raw-config-dialog { margin:auto; inset:0; height:fit-content; }
+.raw-config-dialog h2 { margin:0 0 10px; font-size:20px; }
+.raw-config-dialog p { margin:10px 0; font-size:13px; line-height:1.6; }
+.raw-config-dialog label { display:flex; flex-direction:column; gap:6px; font-size:13px; margin:12px 0; }
+.raw-config-dialog input,.raw-config-dialog select { box-sizing:border-box; width:100%; min-width:0; padding:9px 10px; font:inherit; border:1px solid #ccd8d1; border-radius:7px; background:white; color:inherit; }
+.raw-field-row { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+.raw-file-name { overflow-wrap:anywhere; color:#52675c; }
+.raw-config-hint { color:#68736f; }
+.raw-size-hint { padding:8px 10px; background:#eef5f0; border-radius:7px; }
+.raw-config-error { color:#a8402d; }
+.raw-config-error:empty { display:none; }
+.raw-config-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:18px; }
+.raw-config-actions button { padding:9px 15px; border:1px solid #ccd8d1; border-radius:8px; font:inherit; cursor:pointer; }

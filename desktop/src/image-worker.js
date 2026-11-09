@@ -7,6 +7,10 @@ self.onmessage = ({data:t}) => {
     if (t.action === "detect-yuv") result = MediaTools.detectYuv(t.bytes, t.size, t.name);
     if (t.action === "parse-raw") {
       const config = t.config || RawTools.detect(t.bytes.subarray(0, 2*1024*1024), t.bytes.length, t.name);
+      if (!t.config && (config.needsManual || RawTools.frameBytes(config.width,config.height,config.bitDepth,config.packing)!==t.bytes.length)) {
+        postMessage({percent:100,result:{needsConfig:true,config}});
+        return;
+      }
       const values = RawTools.decode(t.bytes,config,p=>progress(p*.8,"解包 RAW"));
       progress(85,"统计 RAW");
       result = {config,values,levels:RawTools.levels(values,config.bitDepth)};

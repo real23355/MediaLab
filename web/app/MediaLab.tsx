@@ -21,6 +21,7 @@ import { imageJob, cancelImageJobs, activity } from "../lib/image-jobs";
 import { ActivityProgress,YuvColorControls,DetailFrameChart } from "./AnalysisControls";
 import {OriginalFrameButton} from "./OriginalFrame";
 import {keyFrameData} from "../lib/encoded";
+import {useRawImport} from "./RawConfigDialog";
 import {
   BAYER_PATTERNS,
   RAW_PACKINGS,
@@ -62,7 +63,7 @@ declare global {
   }
 }
 
-const VERSION = "V0.0.9";
+const VERSION = "V0.0.10";
 const PAGE_SIZE = 100;
 const IMAGE_LIMIT = 10;
 const TOTAL_FILE_LIMIT = Math.floor(4.2 * 1024 * 1024 * 1024);
@@ -204,6 +205,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 }
 
 export default function MediaLab() {
+  const {parseRaw,cancelRawPrompt,rawPrompt}=useRawImport();
   const fileInput = useRef<HTMLInputElement>(null);
   const yuvCanvas = useRef<HTMLCanvasElement>(null);
   const rawCanvas = useRef<HTMLCanvasElement>(null);
@@ -303,6 +305,7 @@ export default function MediaLab() {
   }, [stopStreamPlayback]);
 
   const returnHome = useCallback(() => {
+    cancelRawPrompt();
     nativeFrame.current?.close();nativeFrame.current=null;
     cancelImageJobs();
     parseEpoch.current += 1;
@@ -332,7 +335,7 @@ export default function MediaLab() {
     setStreamFrame(0);
     setTablePage(0);
     setError("");
-  }, [imageDocs, stopStreamPlayback]);
+  }, [imageDocs, stopStreamPlayback,cancelRawPrompt]);
 
   useEffect(() => () => stopStreamPlayback(), [stopStreamPlayback]);
 
@@ -491,7 +494,7 @@ export default function MediaLab() {
           if (item.file.size > 256 * 1024 * 1024) {
             throw new Error(`${item.file.name} 超过 256 MB，当前浏览器版本拒绝一次性解码。`);
           }
-          const {bytes:data,config,values,levels} = await imageJob<{bytes:Uint8Array;config:RawConfig;values:Uint16Array;levels:RawLevels}>({action:"parse-raw",file:item.file},item.file.name);
+          const {bytes:data,config,values,levels} = await parseRaw(item.file);
           docs.push({
             id: item.id,
             kind: "raw",
@@ -897,6 +900,7 @@ export default function MediaLab() {
         </div>}
       </header>
       <ActivityProgress />
+      {rawPrompt}
 
       {parseProgress && <section className="parse-progress" aria-live="polite">
         <div><strong>{parseProgress.name} · {parseProgress.phase}</strong><span>{Math.floor(parseProgress.percent)}%</span></div>
