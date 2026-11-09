@@ -76,7 +76,7 @@
     };
   }
 
-  function decode(data, config) {
+  function decode(data, config, onProgress) {
     const expected = frameBytes(config.width, config.height, config.bitDepth, config.packing);
     if (!expected || data.byteLength !== expected) {
       throw new Error(
@@ -91,6 +91,7 @@
       // MIPI RAW10: B0..B3 are P0..P3 bits [9:2], B4 contains four 2-bit tails.
       const rowBytes = Math.ceil(config.width / 4) * 5;
       for (let y = 0; y < config.height; y += 1) {
+        if (y % 32 === 0) onProgress?.(y / config.height * 100);
         let source = y * rowBytes;
         const rowEnd = (y + 1) * config.width;
         for (let target = y * config.width; target < rowEnd; target += 4, source += 5) {
@@ -103,6 +104,7 @@
     } else {
       const little = config.packing === "UNPACKED16_LE";
       for (let index = 0, offset = 0; index < pixels; index += 1, offset += 2) {
+        if (index % 65536 === 0) onProgress?.(index / pixels * 100);
         const word = little
           ? data[offset] | (data[offset + 1] << 8)
           : (data[offset] << 8) | data[offset + 1];
@@ -143,7 +145,7 @@
     return maps[pattern][(y & 1) * 2 + (x & 1)];
   }
 
-  function render(values, config, mode, valueLevels, autoStretch, blackLevel, gain) {
+  function render(values, config, mode, valueLevels, autoStretch, blackLevel, gain, onProgress) {
     const output = new ImageData(config.width, config.height);
     const maximum = 2 ** config.bitDepth - 1;
     const low = (autoStretch ? valueLevels.low : 0) + blackLevel;
@@ -157,6 +159,7 @@
     const average = (points) => points.reduce((sum, point) => sum + sample(point[0], point[1]), 0) / points.length;
     const color = (channel) => channel[0];
     for (let y = 0; y < config.height; y += 1) {
+      if (y % 32 === 0) onProgress?.(y / config.height * 100);
       for (let x = 0; x < config.width; x += 1) {
         const index = y * config.width + x;
         const target = index * 4;

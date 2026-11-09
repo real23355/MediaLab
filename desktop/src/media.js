@@ -215,11 +215,12 @@
     return candidates.sort((a, b) => b.score - a.score).slice(0, 20);
   }
 
-  function renderYuv(data, width, height, format, mode = "rgb") {
+  function renderYuv(data, width, height, format, mode = "rgb", color = {}, onProgress) {
     const size = displaySize(width, height, format, mode);
     const image = new ImageData(size.width, size.height);
     const clamp = (value) => Math.max(0, Math.min(255, value));
     for (let y = 0; y < size.height; y += 1) {
+      if (y % 32 === 0) onProgress?.(y / size.height * 100);
       for (let x = 0; x < size.width; x += 1) {
         const source = sourceCoordinate(format, mode, x, y);
         const [yv, u, v] = pixel(data, width, height, format, source.x, source.y);
@@ -230,6 +231,16 @@
           image.data[index + 1] = value;
           image.data[index + 2] = value;
           image.data[index + 3] = 255;
+          continue;
+        }
+        if ((color.colorMatrix && color.colorMatrix !== "bt601") || color.colorRange === "full") {
+          const [kr,kb] = color.colorMatrix === "bt709" ? [.2126,.0722] : color.colorMatrix === "bt2020" ? [.2627,.0593] : [.299,.114];
+          const yy = color.colorRange === "full" ? yv : (yv-16)*255/219;
+          const cb = (u-128)*(color.colorRange === "full" ? 1 : 255/224), cr = (v-128)*(color.colorRange === "full" ? 1 : 255/224);
+          image.data[index] = clamp(Math.round(yy+2*(1-kr)*cr));
+          image.data[index+1] = clamp(Math.round(yy-2*kb*(1-kb)/(1-kr-kb)*cb-2*kr*(1-kr)/(1-kr-kb)*cr));
+          image.data[index+2] = clamp(Math.round(yy+2*(1-kb)*cb));
+          image.data[index+3] = 255;
           continue;
         }
         const c = yv - 16;

@@ -2,7 +2,7 @@
 
 Tools for viewing and analyzing videos and images.
 
-当前仓库保存 **MediaLab V0.0.8** 的两套实现：
+当前仓库保存 **MediaLab V0.0.9** 的两套实现：
 
 - `web/`：本地优先的网页版本。
 - `desktop/`：Windows 免安装便携版源码，无需管理员权限。
@@ -35,11 +35,13 @@ pnpm dist
 
 安装依赖时会准备固定版本的 FFmpeg 9.0.2（下载后校验构建方 SHA-256）与 FFprobe 5.1.0。Windows 构建使用系统 curl.exe / tar.exe。生成的程序位于 `desktop/release/`，不要求管理员权限。
 
-单文件便携版：`release/MediaLab-Portable-0.0.8.exe`；完整可运行目录：`release/MediaLab-Windows/`，入口为 `MediaLab.exe`。也提供目录版 ZIP，解压后直接运行，启动最快。
+单文件便携版：`release/MediaLab-Portable-0.0.9.exe`；完整可运行目录：`release/MediaLab-Windows/`，入口为 `MediaLab.exe`。也提供目录版 ZIP，解压后直接运行，启动最快。
 
 便携 EXE 首次将运行组件释放到 `%LOCALAPPDATA%\MediaLab\runtime\<版本-内容指纹>`，后续启动复用。不安装服务、不需要管理员权限；这是程序运行组件缓存，不是用户媒体解析缓存。返回首页会取消解析、清除媒体会话与播放临时文件，同一文件再次打开重新解析；不会删除运行组件导致下次启动再次解压。
 
 ## 主要功能
+
+V0.0.9 新增：原始解码帧查看及 PNG 预览导出、Compare 时间/帧号与右侧帧偏移、BT.601/709/2020 与 Full/Limited、局部逐帧图缩放与范围拖动、先展示帧统计再后台生成播放代理。RAW/YUV 读取/解包/渲染后台处理并显示阶段百分比。详见 `P0_TEST_REPORT_v0.0.9.md`。
 
 - YUV/SYUV 文件格式识别、YUV/RGB 彩色预览及 Y/U/V 原始分量灰度查看。
 - YUV 高倍查看按实际屏幕像素尺寸自动显示原始 Y/U/V 值和像素网格，仅绘制当前可见区域，可切换 Auto/Off。

@@ -1,7 +1,7 @@
 const { spawn } = require('node:child_process');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const executable = path.resolve(__dirname,'../release/MediaLab-Windows/MediaLab.exe');
+const executable = process.env.MEDIALAB_SMOKE_EXE || path.resolve(__dirname,'../release/MediaLab-Windows/MediaLab.exe');
 const child = spawn(executable,['--remote-debugging-port=19227'],{windowsHide:true,stdio:'ignore'});
 const delay = ms => new Promise(resolve=>setTimeout(resolve,ms));
 async function command(url,method,params={}) {
@@ -20,9 +20,10 @@ async function command(url,method,params={}) {
   }
   const page=pages.find(p=>p.type==='page');
   await delay(500);
-  const result=await command(page.webSocketDebuggerUrl,'Runtime.evaluate',{expression:'JSON.stringify({title:document.title,version:document.querySelector(".brand b").textContent,home:!!document.querySelector("#home"),ipc:typeof window.desktop.probeStream})',returnByValue:true});
+  const result=await command(page.webSocketDebuggerUrl,'Runtime.evaluate',{expression:'JSON.stringify({title:document.title,version:document.querySelector(".brand b").textContent,home:!!document.querySelector("#home"),ipc:typeof window.desktop.probeStream,exact:typeof window.desktop.extractFrame,worker:typeof window.MLJobs?.run})',returnByValue:true});
   const value=JSON.parse(result.result.value);
   assert.equal(value.version,`V${require('../desktop/package.json').version}`); assert.equal(value.ipc,'function'); assert.ok(value.home);
+  assert.equal(value.exact,'function');assert.equal(value.worker,'function');
   process.stdout.write(JSON.stringify(value)+'\n');
   await command(page.webSocketDebuggerUrl,'Runtime.evaluate',{expression:'window.close()'}).catch(()=>{});
 })().catch(e=>{process.stderr.write(e.stack+'\n');process.exitCode=1}).finally(()=>{child.kill();});

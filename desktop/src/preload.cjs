@@ -6,12 +6,14 @@ contextBridge.exposeInMainWorld("desktop", {
   pathForFile: (file) => webUtils.getPathForFile(file),
   readSlice: (filePath, start, length) =>
     ipcRenderer.invoke("read-slice", filePath, start, length),
-  decodeHeic: (filePath) => ipcRenderer.invoke("decode-heic", filePath),
+  decodeHeic: (filePath,jobId) => ipcRenderer.invoke("decode-heic", filePath,jobId),
   probeStream: (filePath, kind, jobId) =>
     ipcRenderer.invoke("probe-stream", filePath, kind, jobId),
   createProxy: (filePath, kind, fps, frameCount, jobId) =>
     ipcRenderer.invoke("create-proxy", filePath, kind, fps, frameCount, jobId),
   resetSession: () => ipcRenderer.invoke("reset-session"),
+  extractFrame: (...args) => ipcRenderer.invoke("extract-frame",...args),
+  cancelJob: id=>ipcRenderer.invoke("cancel-job",id),
   onProgress: (callback) => {
     const listener = (_event, value) => callback(value);
     ipcRenderer.on("parse-progress", listener);

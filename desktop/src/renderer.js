@@ -18,6 +18,8 @@ const state = {
   rightId: "",
   syncView: true,
   syncPlayback: true,
+  alignment: "time",
+  frameOffset: 0,
   compareRenderToken: 0,
   compareViews: { left: null, right: null },
   compareSyncGuard: false,
@@ -117,6 +119,7 @@ function renderParseProgress(update) {
 window.desktop.onProgress?.(renderParseProgress);
 
 function returnHome() {
+  window.MLJobs.cancel();
   state.sessionToken += 1;
   clearDocuments();
   resetPlayback();
@@ -141,6 +144,9 @@ function returnHome() {
   $("#parse-files").textContent = "开始解析";
   state.syncView = true;
   state.syncPlayback = true;
+  state.alignment = "time";
+  state.frameOffset = 0;
+  closeOriginalFrame?.();
   state.compareRenderToken += 1;
   state.renderToken += 1;
   $$("#file-tabs, #stream-file-tabs, #frame-chart, #frame-rows, #image-compare").forEach(element => { element.innerHTML = ""; });
@@ -331,7 +337,6 @@ async function parsePendingFiles() {
         streams.push(await createStreamDocument(file, file.kind, activeParseJob.id, sessionToken));
         if (sessionToken !== state.sessionToken) return;
       }
-      state.streams.push(...streams);
       state.pending = [];
       ensureCompareSelection(state.streams);
       renderStreamTabs();
@@ -381,8 +386,8 @@ async function parsePendingFiles() {
 
 async function createYuvDocument(file) {
   const sampleLength = Math.min(file.size, 32 * 1024 * 1024);
-  const sample = new Uint8Array(await window.desktop.readSlice(file.path, 0, sampleLength));
-  const candidates = M.detectYuv(sample, file.size, file.name);
+  const sample = await window.MLJobs.read(file, 0, sampleLength);
+  const candidates = await window.MLJobs.run({action:"detect-yuv",bytes:sample,size:file.size,name:file.name},file.name);
   const frameBytes = M.frameBytes(1920, 1080, "I420");
   return {
     id: file.id,
@@ -415,10 +420,9 @@ async function createRawDocument(file) {
   if (file.size > 256 * 1024 * 1024) {
     throw new Error(`${file.name} 超过 256 MB，当前版本拒绝一次性解码。`);
   }
-  const bytes = new Uint8Array(await window.desktop.readSlice(file.path, 0, file.size));
+  const bytes = await window.MLJobs.read(file,0,file.size);
   if (bytes.byteLength !== file.size) throw new Error(`${file.name} 未能完整读取。`);
-  const config = R.detect(bytes.subarray(0, Math.min(bytes.byteLength, 2 * 1024 * 1024)), file.size, file.name);
-  const values = R.decode(bytes, config);
+  const {config,values,levels} = await window.MLJobs.run({action:"parse-raw",bytes,name:file.name},file.name);
   return {
     id: file.id,
     kind: "raw",
@@ -426,7 +430,7 @@ async function createRawDocument(file) {
     bytes,
     values,
     config,
-    levels: R.levels(values, config.bitDepth),
+    levels,
     mode: "rgb",
     autoStretch: true,
     blackLevel: 0,
@@ -440,11 +444,14 @@ async function createHeicDocument(file) {
   if (file.size > 256 * 1024 * 1024) {
     throw new Error(`${file.name} 超过 256 MB，无法在当前版本中解码。`);
   }
-  const decoded = await withTimeout(
-    window.desktop.decodeHeic(file.path),
+  const status=window.MLJobs.begin(file.name),jobId=`heic-${state.sessionToken}-${file.id}`;
+  const unsubscribe=window.desktop.onProgress(p=>{if(p.jobId===jobId)status.update(p.percent,p.phase);});
+  let decoded;
+  try { decoded = await withTimeout(
+    window.desktop.decodeHeic(file.path,jobId),
     45_000,
     "HEIC 解码超过 45 秒，已停止等待。可使用“重启应用”恢复。"
-  );
+  ); } finally {unsubscribe();status.end();}
   const pngBytes = decoded.bytes?.data
     ? new Uint8Array(decoded.bytes.data)
     : new Uint8Array(decoded.bytes);
@@ -868,6 +875,8 @@ function syncYuvControls() {
   const config = doc.config;
   $("#yuv-format").value = config.format;
   $("#yuv-display").value = doc.displayMode || "rgb";
+  $("#yuv-matrix").value = config.colorMatrix || "bt601";
+  $("#yuv-range").value = config.colorRange || "limited";
   $("#yuv-pixel-values").value = doc.pixelValues || "auto";
   $("#yuv-width").value = config.width;
   $("#yuv-height").value = config.height;
@@ -892,11 +901,11 @@ async function loadYuvFrameData(doc) {
   if (doc.yuvFrameKey === key && doc.yuvFrameData?.byteLength === config.frameBytes) {
     return doc.yuvFrameData;
   }
-  const raw = new Uint8Array(await window.desktop.readSlice(
-    doc.file.path,
+  const raw = await window.MLJobs.read(
+    doc.file,
     (config.dataOffset || 0) + doc.frame * config.frameBytes,
     config.frameBytes
-  ));
+  );
   if (raw.byteLength < config.frameBytes) throw new Error("文件长度不足一帧");
   doc.yuvFrameKey = key;
   doc.yuvFrameData = raw;
@@ -935,7 +944,8 @@ async function renderYuvFrame() {
     if (token !== state.renderToken) return;
     const mode = doc.displayMode || "rgb";
     const size = M.displaySize(config.width, config.height, config.format, mode);
-    const image = M.renderYuv(raw, config.width, config.height, config.format, mode);
+    const image = await window.MLJobs.run({action:"render-yuv",bytes:raw,config,mode},doc.file.name);
+    if (token !== state.renderToken) return;
     const canvas = $("#yuv-canvas");
     canvas.width = size.width;
     canvas.height = size.height;
@@ -974,6 +984,11 @@ async function changeYuvConfig() {
 ["#yuv-format", "#yuv-width", "#yuv-height"].forEach((selector) => {
   $(selector).addEventListener("change", changeYuvConfig);
 });
+["#yuv-matrix", "#yuv-range"].forEach(selector => $(selector).addEventListener("change",async()=>{
+  const doc=activeDocument();if(doc?.kind!=="yuv")return;
+  doc.config.colorMatrix=$("#yuv-matrix").value;doc.config.colorRange=$("#yuv-range").value;
+  await renderYuvFrame();
+}));
 $("#yuv-display").addEventListener("change", async (event) => {
   const doc = activeDocument();
   if (!doc || doc.kind !== "yuv") return;
@@ -1083,10 +1098,7 @@ async function renderRawFrame() {
   const doc = activeDocument();
   if (!doc || doc.kind !== "raw") return;
   try {
-    const image = R.render(
-      doc.values, doc.config, doc.mode, doc.levels,
-      doc.autoStretch, doc.blackLevel, doc.gain
-    );
+    const image = await window.MLJobs.run({action:"render-raw",...doc},doc.file.name);
     if (token !== state.renderToken) return;
     const canvas = $("#raw-canvas");
     canvas.width = doc.config.width;
@@ -1114,10 +1126,10 @@ async function changeRawConfig() {
   };
   next.frameBytes = R.frameBytes(next.width, next.height, next.bitDepth, next.packing);
   try {
-    const values = R.decode(doc.bytes, next);
+    const {values,levels}=await window.MLJobs.run({action:"parse-raw",bytes:doc.bytes,config:next,name:doc.file.name},doc.file.name);
     doc.config = next;
     doc.values = values;
-    doc.levels = R.levels(values, next.bitDepth);
+    doc.levels = levels;
     doc.pixel = { x: 0, y: 0 };
     await renderRawFrame();
   } catch (error) {
@@ -1213,6 +1225,10 @@ async function renderImageCompare() {
     state.syncView = event.target.checked;
     renderImageCompare();
   });
+  $$("#image-compare .compare-yuv-controls").forEach(controls=>{
+    const doc=compareDoc(controls.closest(".compare-side").dataset.side);
+    addYuvColorControls(controls,doc,()=>renderImageCompare());
+  });
   $$("#image-compare .compare-display-mode").forEach((select) => select.addEventListener("change", async () => {
     const side = select.closest(".compare-side").dataset.side;
     const doc = compareDoc(side);
@@ -1251,10 +1267,11 @@ async function renderCompareImage(side, doc, token) {
     const config = doc.config;
     const raw = await loadYuvFrameData(doc);
     if (token !== state.compareRenderToken) return;
-    image = M.renderYuv(raw, config.width, config.height, config.format, doc.displayMode || "rgb");
+    image = await window.MLJobs.run({action:"render-yuv",bytes:raw,config,mode:doc.displayMode||"rgb"},doc.file.name);
   } else {
-    image = R.render(doc.values, doc.config, doc.mode, doc.levels, doc.autoStretch, doc.blackLevel, doc.gain);
+    image = await window.MLJobs.run({action:"render-raw",...doc},doc.file.name);
   }
+  if (token !== state.compareRenderToken) return;
   const canvas = surface.querySelector("canvas");
   const size = compareDocSize(doc);
   canvas.width = size.width;
@@ -1435,6 +1452,11 @@ async function createStreamDocument(file, kind, jobId, epoch = state.sessionToke
     proxyUrl: "",
     proxyError: ""
   };
+  state.streams.push(doc);
+  ensureCompareSelection(state.streams);
+  renderStreamTabs();
+  activateStreamDocument(doc);
+  show($("#compare-mode"),state.streams.length>=2);
   try {
     const result = await window.desktop.createProxy(file.path, kind, doc.fps, analysis.frames.length, jobId);
     if (epoch !== state.sessionToken) throw new Error("解析已取消");
@@ -1448,6 +1470,8 @@ async function createStreamDocument(file, kind, jobId, epoch = state.sessionToke
     doc.proxyError = error.message;
   }
   notice("", "working", true);
+  if (state.activeStreamId===doc.id) activateStreamDocument(doc);
+  if (state.compareMode) renderStreamCompare();
   return doc;
 }
 
@@ -1539,13 +1563,21 @@ function renderStreamCompare() {
   }).join("");
   container.innerHTML = `<div class="compare-toolbar panel"><strong>Compare 视频对比</strong><button id="play-both" class="primary">▶ Play Both</button><button id="pause-both">Ⅱ Pause Both</button><label><input id="sync-playback" type="checkbox" ${state.syncPlayback ? "checked" : ""}/> Sync Playback</label></div><div class="compare-grid video-compare-grid">${cards}</div>`;
   $("#sync-playback").addEventListener("change", (event) => { state.syncPlayback = event.target.checked; });
+  const align=document.createElement("span");align.className="alignment-controls";
+  align.innerHTML=`<label>对齐<select id="compare-align"><option value="time">时间</option><option value="frame">帧号</option></select></label><label>右侧偏移（帧）<input id="compare-offset" type="number" value="${state.frameOffset}" /></label><small>右帧 = 左帧 + 偏移（帧号模式）</small>`;
+  container.querySelector(".compare-toolbar").append(align);
+  $("#compare-align").value=state.alignment;
+  const alignNow=()=>{state.alignment=$("#compare-align").value;state.frameOffset=Number($("#compare-offset").value)||0;const v=container.querySelector('[data-side="left"] video');seekCompareVideo("left",v.currentTime,true);};
+  $("#compare-align").onchange=alignNow;$("#compare-offset").onchange=alignNow;
   $("#play-both").addEventListener("click", () => {
     const videos = $$("#stream-compare video");
+    if(state.syncPlayback)seekCompareVideo("left",videos[0].currentTime,true);
     videos.forEach((video) => video.play().catch(() => undefined));
   });
   $("#pause-both").addEventListener("click", () => $$("#stream-compare video").forEach((video) => video.pause()));
   bindCompareVideo("left", left);
   bindCompareVideo("right", right);
+  for(const side of ["left","right"]){const root=container.querySelector(`[data-side="${side}"]`);const doc=streamCompareDoc(side);addOriginalButton(root.querySelector(".compare-video-meta"),()=>{const v=root.querySelector("video");v.pause();return {doc,index:Math.min(doc.analysis.frames.length-1,Math.round(v.currentTime*doc.fps))};});attachFrameDetail(root,doc,i=>seekCompareVideo(side,i/doc.fps,true));}
   bindVideoDividers(container);
 }
 
@@ -1609,9 +1641,10 @@ function bindCompareVideo(side, doc) {
     if (!state.syncPlayback || state.compareSyncGuard || video.paused) return;
     const otherSide = side === "left" ? "right" : "left";
     const other = $(`#stream-compare [data-side="${otherSide}"] video`);
-    if (other && !other.paused && Math.abs(other.currentTime - video.currentTime) > 0.1) {
+    const aligned = alignedTime(side,video.currentTime);
+    if (other && !other.paused && Math.abs(other.currentTime - aligned) > 0.1) {
       state.compareSyncGuard = true;
-      other.currentTime = Math.min(video.currentTime, Number.isFinite(other.duration) ? other.duration : video.currentTime);
+      other.currentTime = Math.max(0,Math.min(aligned, Number.isFinite(other.duration) ? other.duration : aligned));
       queueMicrotask(() => { state.compareSyncGuard = false; });
     }
   };
@@ -1644,7 +1677,7 @@ function seekCompareVideo(side, seconds, sync) {
     const otherVideo = $(`#stream-compare [data-side="${other}"] video`);
     if (otherVideo) {
       otherVideo.pause();
-      otherVideo.currentTime = Math.max(0, seconds);
+      otherVideo.currentTime = Math.max(0, alignedTime(side,seconds));
     }
     queueMicrotask(() => { state.compareSyncGuard = false; });
   }
@@ -1658,9 +1691,9 @@ function stepCompareVideo(side, delta) {
   if (state.syncPlayback) {
     const other = side === "left" ? "right" : "left";
     const otherDoc = streamCompareDoc(other);
-    if (otherDoc && Math.abs(otherDoc.fps - doc.fps) < 0.01) {
+    if (otherDoc) {
       const otherVideo = $(`#stream-compare [data-side="${other}"] video`);
-      if (otherVideo) seekCompareVideo(other, otherVideo.currentTime + delta / otherDoc.fps, false);
+      if (otherVideo) seekCompareVideo(other, alignedTime(side,video.currentTime), false);
     }
   }
 }
@@ -1731,6 +1764,8 @@ function renderFrameChart() {
   $("#frame-chart").querySelectorAll("button").forEach((button) => {
     button.addEventListener("click", () => selectStreamFrame(Number(button.dataset.frame), true));
   });
+  const doc=state.streams.find(d=>d.id===state.activeStreamId);
+  if(doc)attachFrameDetail($("#frame-chart").closest(".frame-panel"),doc,i=>selectStreamFrame(i,true));
 }
 
 function renderFrameTable() {

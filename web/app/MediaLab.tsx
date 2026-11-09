@@ -17,6 +17,10 @@ import {
   YUV_FORMATS,
 } from "../lib/media";
 import { decodeHeicWithWebCodecs } from "../lib/heic";
+import { imageJob, cancelImageJobs, activity } from "../lib/image-jobs";
+import { ActivityProgress,YuvColorControls,DetailFrameChart } from "./AnalysisControls";
+import {OriginalFrameButton} from "./OriginalFrame";
+import {keyFrameData} from "../lib/encoded";
 import {
   BAYER_PATTERNS,
   RAW_PACKINGS,
@@ -58,7 +62,7 @@ declare global {
   }
 }
 
-const VERSION = "V0.0.8";
+const VERSION = "V0.0.9";
 const PAGE_SIZE = 100;
 const IMAGE_LIMIT = 10;
 const TOTAL_FILE_LIMIT = Math.floor(4.2 * 1024 * 1024 * 1024);
@@ -207,6 +211,7 @@ export default function MediaLab() {
   const decoder = useRef<VideoDecoder | null>(null);
   const playbackTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const decodeRun = useRef(0);
+  const nativeFrame=useRef<VideoFrame|null>(null);
   const parseEpoch = useRef(0);
   const cancelParse = useRef<(() => void) | null>(null);
   const [parseProgress, setParseProgress] = useState<{ name: string; phase: string; percent: number } | null>(null);
@@ -221,6 +226,8 @@ export default function MediaLab() {
   const [rightId, setRightId] = useState("");
   const [syncView, setSyncView] = useState(true);
   const [syncPlayback, setSyncPlayback] = useState(true);
+  const [alignment,setAlignment]=useState("time");
+  const [frameOffset,setFrameOffset]=useState(0);
   const [viewSyncState, setViewSyncState] = useState<ViewSyncState | null>(null);
   const [streamFile, setStreamFile] = useState<File | null>(null);
   const [streamBytes, setStreamBytes] = useState<Uint8Array | null>(null);
@@ -262,12 +269,13 @@ export default function MediaLab() {
       const rightTime = rightVideoRef.current?.currentTime();
       if (leftTime == null || rightTime == null) return;
       if (leftVideoRef.current?.isPlaying() && rightVideoRef.current?.isPlaying()) {
-        if (leftTime - rightTime > .1) rightVideoRef.current.catchUp(leftTime);
-        else if (rightTime - leftTime > .1) leftVideoRef.current.catchUp(rightTime);
+        const target=alignment==="frame"?(Math.round(leftTime*(leftStream?.fps||25))+frameOffset)/(rightStream?.fps||25):leftTime+frameOffset/(rightStream?.fps||25);
+        if(target-rightTime>.1)rightVideoRef.current.catchUp(target);
+        else if(rightTime-target>.1)leftVideoRef.current.catchUp(alignment==="frame"?(Math.round(rightTime*(rightStream?.fps||25))-frameOffset)/(leftStream?.fps||25):rightTime-frameOffset/(rightStream?.fps||25));
       }
     }, 750);
     return () => clearInterval(timer);
-  }, [compareMode, syncPlayback, workspaceKind]);
+  }, [compareMode, syncPlayback, workspaceKind,alignment,frameOffset,leftStream,rightStream]);
 
   const stopStreamPlayback = useCallback(() => {
     if (playbackTimer.current) clearInterval(playbackTimer.current);
@@ -283,6 +291,7 @@ export default function MediaLab() {
   }, []);
 
   const activateStream = useCallback((doc: StreamDocument) => {
+    nativeFrame.current?.close();nativeFrame.current=null;
     stopStreamPlayback();
     setActiveStreamId(doc.id);
     setStreamFile(doc.file);
@@ -294,6 +303,8 @@ export default function MediaLab() {
   }, [stopStreamPlayback]);
 
   const returnHome = useCallback(() => {
+    nativeFrame.current?.close();nativeFrame.current=null;
+    cancelImageJobs();
     parseEpoch.current += 1;
     cancelParse.current?.();
     cancelParse.current = null;
@@ -301,6 +312,7 @@ export default function MediaLab() {
     setParseProgress(null);
     setSyncView(true);
     setSyncPlayback(true);
+    setAlignment("time");setFrameOffset(0);
     stopStreamPlayback();
     imageDocs.forEach((doc) => {
       if (doc.kind === "heic" || doc.kind === "image") URL.revokeObjectURL(doc.url);
@@ -437,9 +449,9 @@ export default function MediaLab() {
             analysis,
             fps: 25,
           });
+          setStreamDocs(current=>[...current,docs[docs.length-1]]);
+          if(index===0)activateStream(docs[0]);
         }
-        setStreamDocs((current) => [...current, ...docs]);
-        activateStream(docs[0]);
         setLeftId((value) => value || streamDocs[0]?.id || docs[0]?.id || "");
         setRightId((value) => value || streamDocs[1]?.id || docs[1]?.id || docs[0]?.id || "");
         setPendingItems([]);
@@ -450,8 +462,7 @@ export default function MediaLab() {
       for (const item of pendingItems) {
         checkEpoch();
         if (item.kind === "yuv") {
-          const data = new Uint8Array(await item.file.arrayBuffer());
-          const candidates = detectYuv(data, item.file.name);
+          const {bytes:data,candidates} = await imageJob<{bytes:Uint8Array;candidates:YuvCandidate[]}>({action:"parse-yuv",file:item.file},item.file.name);
           const fallbackBytes = bytesForYuvFrame(1920, 1080, "I420");
           const config = candidates[0] ?? {
             width: 1920,
@@ -480,9 +491,7 @@ export default function MediaLab() {
           if (item.file.size > 256 * 1024 * 1024) {
             throw new Error(`${item.file.name} 超过 256 MB，当前浏览器版本拒绝一次性解码。`);
           }
-          const data = new Uint8Array(await item.file.arrayBuffer());
-          const config = detectRaw(data.subarray(0, Math.min(data.byteLength, 2 * 1024 * 1024)), data.byteLength, item.file.name);
-          const values = decodeRaw(data, config);
+          const {bytes:data,config,values,levels} = await imageJob<{bytes:Uint8Array;config:RawConfig;values:Uint16Array;levels:RawLevels}>({action:"parse-raw",file:item.file},item.file.name);
           docs.push({
             id: item.id,
             kind: "raw",
@@ -490,14 +499,18 @@ export default function MediaLab() {
             bytes: data,
             values,
             config,
-            levels: rawLevels(values, config.bitDepth),
+            levels,
             mode: "rgb",
             autoStretch: true,
             blackLevel: 0,
             gain: 1,
           });
         } else if (item.kind === "heic") {
+          const heicStatus=activity(item.file.name);
+          try {
+          heicStatus.update(0,"读取 HEIC");
           const bytes = new Uint8Array(await item.file.arrayBuffer());
+          heicStatus.update(35,"解码 HEIC");
           let blob: Blob;
           let decodedSize: { width: number; height: number } | undefined;
           try {
@@ -525,6 +538,7 @@ export default function MediaLab() {
             blob = Array.isArray(converted) ? converted[0] : converted;
           }
           const url = URL.createObjectURL(blob);
+          heicStatus.update(90,"读取解码图像");
           newUrls.push(url);
           const size = decodedSize ?? await loadImageSize(url);
           docs.push({
@@ -534,6 +548,7 @@ export default function MediaLab() {
             url,
             ...size,
           });
+          }finally{heicStatus.end();}
         } else {
           const url = URL.createObjectURL(item.file);
           newUrls.push(url);
@@ -584,17 +599,11 @@ export default function MediaLab() {
     );
     canvas.width = size.width;
     canvas.height = size.height;
-    try {
-      const image = renderYuvFrame(
-        activeDoc.bytes,
-        activeDoc.config,
-        activeDoc.frame,
-        activeDoc.displayMode,
-      );
-      canvas.getContext("2d", { alpha: false })?.putImageData(image, 0, 0);
-    } catch {
-      setError("当前参数超出了文件范围，请检查分辨率、格式或 SYUV 文件头。");
-    }
+    let active=true;
+    imageJob<ImageData>({action:"render-yuv",...activeDoc,mode:activeDoc.displayMode},activeDoc.file.name)
+      .then(image=>{if(active)canvas.getContext("2d",{alpha:false})?.putImageData(image,0,0);})
+      .catch(e=>{if(active)setError(e.message);});
+    return ()=>{active=false;};
   }, [activeDoc]);
 
   useEffect(() => {
@@ -602,20 +611,11 @@ export default function MediaLab() {
     const canvas = rawCanvas.current;
     canvas.width = activeDoc.config.width;
     canvas.height = activeDoc.config.height;
-    try {
-      const image = renderRawPreview(
-        activeDoc.values,
-        activeDoc.config,
-        activeDoc.mode,
-        activeDoc.levels,
-        activeDoc.autoStretch,
-        activeDoc.blackLevel,
-        activeDoc.gain,
-      );
-      canvas.getContext("2d", { alpha: false })?.putImageData(image, 0, 0);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "RAW 预览生成失败");
-    }
+    let active=true;
+    imageJob<ImageData>({action:"render-raw",...activeDoc},activeDoc.file.name)
+      .then(image=>{if(active)canvas.getContext("2d",{alpha:false})?.putImageData(image,0,0);})
+      .catch(e=>{if(active)setError(e.message);});
+    return ()=>{active=false;};
   }, [activeDoc]);
 
   useEffect(() => {
@@ -637,6 +637,7 @@ export default function MediaLab() {
   }, [stream]);
 
   const drawVideoFrame = useCallback((videoFrame: VideoFrame) => {
+    nativeFrame.current?.close();nativeFrame.current=videoFrame.clone();
     const canvas = streamCanvas.current;
     if (!canvas) {
       videoFrame.close();
@@ -689,7 +690,7 @@ export default function MediaLab() {
         type: frame.key ? "key" : "delta",
         timestamp: Math.round((index * 1_000_000) / streamFps),
         duration: Math.round(1_000_000 / streamFps),
-        data: streamBytes.slice(frame.start, frame.end),
+        data: frame.key?keyFrameData(streamBytes.subarray(0,frame.start),streamBytes.slice(frame.start,frame.end),stream.codecString):streamBytes.slice(frame.start, frame.end),
       });
     },
     [stream, streamBytes, streamFps],
@@ -709,16 +710,19 @@ export default function MediaLab() {
       const nextDecoder = makeDecoder(target, run);
       if (!nextDecoder) return;
       setError("");
+      const status=activity(`原码流定位帧 #${target}`);
       try {
         for (let index = firstKey; index <= target; index += 1) {
           const chunk = chunkForFrame(index);
           if (chunk) nextDecoder.decode(chunk);
-          if (nextDecoder.decodeQueueSize > 60) await nextDecoder.flush();
+          while (nextDecoder.decodeQueueSize > 60 && run===decodeRun.current) await new Promise(r=>setTimeout(r,2));
+          if(index%32===0)status.update((index-firstKey)/Math.max(1,target-firstKey+1)*99,"解码帧");
         }
         await nextDecoder.flush();
       } catch (caught) {
         setError(caught instanceof Error ? `无法显示该帧：${caught.message}` : "无法显示该帧");
       } finally {
+        status.end();
         if (run === decodeRun.current) {
           try {
             nextDecoder.close();
@@ -732,6 +736,11 @@ export default function MediaLab() {
     [chunkForFrame, decoderSupport, makeDecoder, stopStreamPlayback, stream, streamBytes],
   );
 
+  function mappedTime(side:"left"|"right",seconds:number){
+    const lf=leftStream?.fps||25,rf=rightStream?.fps||25;
+    return alignment==="frame"?(side==="left"?(Math.round(seconds*lf)+frameOffset)/rf:(Math.round(seconds*rf)-frameOffset)/lf):seconds+(side==="left"?1:-1)*frameOffset/rf;
+  }
+  function syncSeek(side:"left"|"right",seconds:number){if(syncPlayback)(side==="left"?rightVideoRef:leftVideoRef).current?.seekTime(Math.max(0,mappedTime(side,seconds)));}
   const selectStreamFrame = useCallback(
     (index: number) => {
       setStreamFrame(index);
@@ -741,13 +750,13 @@ export default function MediaLab() {
         if (side) {
           const seconds = index / streamFps;
           side.current?.seekTime(seconds);
-          if (syncPlayback) (side === leftVideoRef ? rightVideoRef : leftVideoRef).current?.seekTime(seconds);
+          if (syncPlayback) syncSeek(side===leftVideoRef?"left":"right",seconds);
           return;
         }
       }
       showEncodedFrame(index);
     },
-    [showEncodedFrame, compareMode, activeStreamId, leftStream?.id, rightStream?.id, streamFps, syncPlayback],
+    [showEncodedFrame, compareMode, activeStreamId, leftStream, rightStream, streamFps, syncPlayback,alignment,frameOffset],
   );
 
   const startStreamPlayback = useCallback(() => {
@@ -812,7 +821,7 @@ export default function MediaLab() {
     });
   };
 
-  const updateRawConfig = (
+  const updateRawConfig = async (
     field: "width" | "height" | "bitDepth" | "bayer" | "packing",
     value: string,
   ) => {
@@ -829,12 +838,14 @@ export default function MediaLab() {
         reason: "手动调整",
       };
       next.frameBytes = bytesForRawFrame(next.width, next.height, next.bitDepth, next.packing);
-      const values = decodeRaw(activeDoc.bytes, next);
+      const epoch=parseEpoch.current;
+      const {values,levels}=await imageJob<{values:Uint16Array;levels:RawLevels}>({action:"parse-raw",bytes:activeDoc.bytes,config:next},activeDoc.file.name);
+      if(epoch!==parseEpoch.current)return;
       updateRawDoc(activeDoc.id, (doc) => ({
         ...doc,
         config: next,
         values,
-        levels: rawLevels(values, next.bitDepth),
+        levels,
       }));
       setError("");
     } catch (caught) {
@@ -885,6 +896,7 @@ export default function MediaLab() {
           <button className="button subtle" type="button" onClick={returnHome}>返回首页</button>
         </div>}
       </header>
+      <ActivityProgress />
 
       {parseProgress && <section className="parse-progress" aria-live="polite">
         <div><strong>{parseProgress.name} · {parseProgress.phase}</strong><span>{Math.floor(parseProgress.percent)}%</span></div>
@@ -979,6 +991,7 @@ export default function MediaLab() {
                   doc={leftImage}
                   onYuvMode={(mode) => updateYuvDoc(leftImage.id, (doc) => ({ ...doc, displayMode: mode }))}
                   onPixelValues={(pixelValues) => updateYuvDoc(leftImage.id, (doc) => ({ ...doc, pixelValues }))}
+                  onColor={color=>updateYuvDoc(leftImage.id,doc=>({...doc,config:{...doc.config,...color}}))}
                   syncState={syncView ? viewSyncState : null}
                   onViewChange={(next) => syncView && setViewSyncState(next)}
                 />
@@ -987,6 +1000,7 @@ export default function MediaLab() {
                   doc={rightImage}
                   onYuvMode={(mode) => updateYuvDoc(rightImage.id, (doc) => ({ ...doc, displayMode: mode }))}
                   onPixelValues={(pixelValues) => updateYuvDoc(rightImage.id, (doc) => ({ ...doc, pixelValues }))}
+                  onColor={color=>updateYuvDoc(rightImage.id,doc=>({...doc,config:{...doc.config,...color}}))}
                   syncState={syncView ? viewSyncState : null}
                   onViewChange={(next) => syncView && setViewSyncState(next)}
                 />
@@ -1018,6 +1032,7 @@ export default function MediaLab() {
                 onPixelValues={(pixelValues) =>
                   updateYuvDoc(activeDoc.id, (doc) => ({ ...doc, pixelValues }))
                 }
+                onColor={(color)=>updateYuvDoc(activeDoc.id,doc=>({...doc,config:{...doc.config,...color}}))}
               />
             ) : activeDoc.kind === "raw" ? (
               <RawViewer
@@ -1056,28 +1071,30 @@ export default function MediaLab() {
                   Math.max(0, rightStream.analysis.frames.findIndex(frame => frame.key)) / rightStream.fps,
                 ) : undefined;
                 leftVideoRef.current?.play(time);
-                rightVideoRef.current?.play(time);
+                rightVideoRef.current?.play(time==null?undefined:Math.max(0,mappedTime("left",time)));
               }}>▶ Play Both</button>
               <button type="button" className="button subtle" onClick={() => {
                 leftVideoRef.current?.pause();
                 rightVideoRef.current?.pause();
               }}>Ⅱ Pause Both</button>
               <label><input type="checkbox" checked={syncPlayback} onChange={(event) => setSyncPlayback(event.target.checked)} /> Sync Playback</label>
+              <label>对齐<select aria-label="对齐" value={alignment} onChange={e=>{setAlignment(e.target.value);leftVideoRef.current?.pause();rightVideoRef.current?.pause();}}><option value="time">时间</option><option value="frame">帧号</option></select></label>
+              <label>右侧偏移（帧）<input aria-label="右侧偏移" type="number" value={frameOffset} onChange={e=>{setFrameOffset(Number(e.target.value)||0);leftVideoRef.current?.pause();rightVideoRef.current?.pause();}}/></label>
             </div>
             <div className="compare-grid video-compare-grid">
               <CompareStreamViewer
                 ref={leftVideoRef}
                 side="Left"
                 doc={leftStream}
-                onSeek={(seconds) => syncPlayback && rightVideoRef.current?.seekTime(seconds)}
-                onStep={(delta) => syncPlayback && Math.abs(leftStream.fps - rightStream.fps) < 0.01 && rightVideoRef.current?.step(delta)}
+                onSeek={seconds=>syncSeek("left",seconds)}
+                onStep={()=>syncSeek("left",leftVideoRef.current?.currentTime()||0)}
               />
               <CompareStreamViewer
                 ref={rightVideoRef}
                 side="Right"
                 doc={rightStream}
-                onSeek={(seconds) => syncPlayback && leftVideoRef.current?.seekTime(seconds)}
-                onStep={(delta) => syncPlayback && Math.abs(leftStream.fps - rightStream.fps) < 0.01 && leftVideoRef.current?.step(delta)}
+                onSeek={seconds=>syncSeek("right",seconds)}
+                onStep={()=>syncSeek("right",rightVideoRef.current?.currentTime()||0)}
               />
             </div>
           </div>}
@@ -1094,6 +1111,7 @@ export default function MediaLab() {
           <div className="stream-layout">
             <div className="viewer panel">
               <div className="viewer-header">
+                {activeStreamDoc&&<OriginalFrameButton doc={activeStreamDoc} index={streamFrame} onPause={stopStreamPlayback} getSnapshot={()=>nativeFrame.current&&Math.round(nativeFrame.current.timestamp*streamFps/1e6)===streamFrame?nativeFrame.current.clone():null}/>}
                 <div>
                   <span>解码画面</span>
                   <small>{decoderSupport === "supported" ? "浏览器解码器可用" : "当前浏览器仅支持码流分析"}</small>
@@ -1156,6 +1174,7 @@ export default function MediaLab() {
           </div>
           <VideoDivider />
           <div className="frame-analysis panel">
+            <DetailFrameChart frames={stream.frames} frame={streamFrame} onSelect={selectStreamFrame}/>
             <div className="section-heading">
               <div><h2>逐帧编码大小 <small>#{streamFrame} · {selectedFrame?.type} · {formatBytes(selectedFrame?.size ?? 0)}</small></h2></div>
               <div className="legend">
@@ -1722,6 +1741,7 @@ function CompareImageViewer({
   doc,
   onYuvMode,
   onPixelValues,
+  onColor,
   syncState,
   onViewChange,
 }: {
@@ -1729,6 +1749,7 @@ function CompareImageViewer({
   doc: ImageDocument;
   onYuvMode: (mode: YuvDisplayMode) => void;
   onPixelValues: (mode: PixelValuesMode) => void;
+  onColor: (color:Pick<YuvCandidate,"colorMatrix"|"colorRange">)=>void;
   syncState: ViewSyncState | null;
   onViewChange: (state: ViewSyncState) => void;
 }) {
@@ -1745,10 +1766,10 @@ function CompareImageViewer({
     const canvas = canvasRef.current;
     canvas.width = width;
     canvas.height = height;
-    const image = doc.kind === "yuv"
-      ? renderYuvFrame(doc.bytes, doc.config, doc.frame, doc.displayMode)
-      : renderRawPreview(doc.values, doc.config, doc.mode, doc.levels, doc.autoStretch, doc.blackLevel, doc.gain);
-    canvas.getContext("2d", { alpha: false })?.putImageData(image, 0, 0);
+    let active=true;
+    imageJob<ImageData>({action:doc.kind==="yuv"?"render-yuv":"render-raw",...doc,mode:doc.kind==="yuv"?doc.displayMode:doc.mode},doc.file.name)
+      .then(image=>{if(active)canvas.getContext("2d",{alpha:false})?.putImageData(image,0,0);}).catch(()=>{});
+    return ()=>{active=false;};
   }, [doc, height, raster, width]);
   const format = doc.kind === "yuv"
     ? `${doc.config.format} · ${YUV_DISPLAY_MODES.find((item) => item.value === doc.displayMode)?.label} · 帧 ${doc.frame + 1}/${doc.config.frameCount}`
@@ -1758,6 +1779,7 @@ function CompareImageViewer({
   return <div className="compare-side">
     <div className="compare-side-label"><b>{side}</b><span title={doc.file.name}>{doc.file.name}</span><em>{format}</em>
       {doc.kind === "yuv" && <div className="compare-yuv-controls">
+        <YuvColorControls config={doc.config} onChange={onColor}/>
         <label className="display-mode-control">Display:
           <select value={doc.displayMode} onChange={(event) => onYuvMode(event.target.value as YuvDisplayMode)}>
             {YUV_DISPLAY_MODES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
@@ -1805,6 +1827,7 @@ function YuvViewer({
   onFps,
   onDisplayMode,
   onPixelValues,
+  onColor,
 }: {
   doc: YuvDocument;
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
@@ -1814,6 +1837,7 @@ function YuvViewer({
   onFps: (fps: number) => void;
   onDisplayMode: (mode: YuvDisplayMode) => void;
   onPixelValues: (mode: PixelValuesMode) => void;
+  onColor: (color:Pick<YuvCandidate,"colorMatrix"|"colorRange">) => void;
 }) {
   const [playing, setPlaying] = useState(false);
   const [pixel, setPixel] = useState({ x: 0, y: 0 });
@@ -1855,6 +1879,7 @@ function YuvViewer({
             <option value="off">Off</option>
           </select>
         </label>
+        <YuvColorControls config={doc.config} onChange={onColor}/>
         <div className="field-pair">
           <label>宽度<input type="number" min="1" value={doc.config.width} onChange={(event) => onConfig("width", event.target.value)} /></label>
           <label>高度<input type="number" min="1" value={doc.config.height} onChange={(event) => onConfig("height", event.target.value)} /></label>
@@ -2004,6 +2029,8 @@ const CompareStreamViewer = forwardRef<CompareStreamHandle, {
   onStep: (delta: number) => void;
 }>(function CompareStreamViewer({ side, doc, onSeek, onStep }, ref) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const nativeFrame=useRef<VideoFrame|null>(null);
+  useEffect(()=>()=>{nativeFrame.current?.close();nativeFrame.current=null;},[doc.id]);
   const decoderRef = useRef<VideoDecoder | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const runRef = useRef(0);
@@ -2045,7 +2072,7 @@ const CompareStreamViewer = forwardRef<CompareStreamHandle, {
       type: item.key ? "key" : "delta",
       timestamp: Math.round(index * 1_000_000 / fps),
       duration: Math.round(1_000_000 / fps),
-      data: doc.bytes.slice(item.start, item.end),
+      data: item.key?keyFrameData(doc.bytes.subarray(0,item.start),doc.bytes.slice(item.start,item.end),doc.analysis.codecString):doc.bytes.slice(item.start, item.end),
     });
   }, [doc, fps]);
 
@@ -2055,6 +2082,7 @@ const CompareStreamViewer = forwardRef<CompareStreamHandle, {
         if (run !== runRef.current) { videoFrame.close(); return; }
         const index = Math.max(0, Math.min(count - 1, Math.round(videoFrame.timestamp * fps / 1_000_000)));
         if (index < minimum) { videoFrame.close(); return; }
+        nativeFrame.current?.close();nativeFrame.current=videoFrame.clone();
         const canvas = canvasRef.current;
         if (canvas) {
           canvas.width = videoFrame.displayWidth;
@@ -2089,16 +2117,19 @@ const CompareStreamViewer = forwardRef<CompareStreamHandle, {
     setDecodeMessage("");
     const run = ++runRef.current;
     const decoder = createDecoder(next, run);
+    const status=activity(`${doc.file.name} · 定位 #${next}`);
     try {
       for (let index = firstKey; index <= next; index += 1) {
         const encoded = chunk(index);
         if (encoded) decoder.decode(encoded);
-        if (decoder.decodeQueueSize > 60) await decoder.flush();
+        while(decoder.decodeQueueSize>60&&run===runRef.current)await new Promise(r=>setTimeout(r,2));
+        if(index%32===0)status.update((index-firstKey)/Math.max(1,next-firstKey+1)*99,"解码帧");
       }
       await decoder.flush();
     } catch (error) {
       if (run === runRef.current) setDecodeMessage(String(error));
     } finally {
+      status.end();
       if (run === runRef.current) {
         try { decoder.close(); } catch { /* already closed */ }
         decoderRef.current = null;
@@ -2180,7 +2211,7 @@ const CompareStreamViewer = forwardRef<CompareStreamHandle, {
       }}
       onFps={() => undefined}
     />
-    <div className="compare-video-meta">{doc.analysis.width || "—"}×{doc.analysis.height || "—"} · {count.toLocaleString("zh-CN")} 帧 · WebCodecs</div>
+    <div className="compare-video-meta">{doc.analysis.width || "—"}×{doc.analysis.height || "—"} · {count.toLocaleString("zh-CN")} 帧 · WebCodecs <OriginalFrameButton doc={doc} index={frame} onPause={pause} getSnapshot={()=>nativeFrame.current&&Math.round(nativeFrame.current.timestamp*fps/1e6)===frame?nativeFrame.current.clone():null}/></div>
     <VideoDivider />
     <CompareFrameChart analysis={doc.analysis} frame={frame} onSelect={(index) => void seekFrame(index, true)} />
   </section>;
@@ -2223,6 +2254,7 @@ function CompareFrameChart({ analysis, frame, onSelect }: { analysis: StreamAnal
   const max = Math.max(1, analysis.maxFrameSize);
   const selected = analysis.frames[frame];
   return <section className="compare-frame-analysis">
+    <DetailFrameChart frames={analysis.frames} frame={frame} onSelect={onSelect}/>
     <div className="section-heading"><h2>Frame Size <small>#{frame} · {selected?.type} · {formatBytes(selected?.size ?? 0)}</small></h2><span className="frame-extrema">最大 {formatBytes(analysis.maxFrameSize)} · 最小 {formatBytes(analysis.minFrameSize)}</span></div>
     <div className="chart-shell"><div className="y-axis">{[1,.5,0].map(tick => <span key={tick} style={{ bottom: `${tick * 100}%` }}>{formatBytes(max * tick)}</span>)}</div>
       <div className="frame-chart" aria-label="逐帧编码大小图">{bars.map(bar => <button type="button" key={bar.rangeStart}

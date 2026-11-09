@@ -22,6 +22,8 @@ export const YUV_DISPLAY_MODES: Array<{
 ];
 
 export interface YuvCandidate {
+  colorMatrix?: "bt601" | "bt709" | "bt2020";
+  colorRange?: "limited" | "full";
   width: number;
   height: number;
   format: YuvFormat;
@@ -353,9 +355,10 @@ export function detectYuv(
 
 export function renderYuvFrame(
   data: Uint8Array,
-  candidate: Pick<YuvCandidate, "width" | "height" | "format" | "frameBytes">,
+  candidate: Pick<YuvCandidate, "width" | "height" | "format" | "frameBytes" | "colorMatrix" | "colorRange">,
   frameIndex: number,
   mode: YuvDisplayMode = "rgb",
+  onProgress?: (percent: number) => void,
 ) {
   const { width, height, format, frameBytes } = candidate;
   const size = yuvDisplaySize(width, height, format, mode);
@@ -363,6 +366,7 @@ export function renderYuvFrame(
   const offset = ("dataOffset" in candidate ? Number(candidate.dataOffset) || 0 : 0) +
     frameIndex * frameBytes;
   for (let y = 0; y < size.height; y += 1) {
+    if (y % 32 === 0) onProgress?.(y / size.height * 100);
     for (let x = 0; x < size.width; x += 1) {
       const source = yuvSourceCoordinate(format, mode, x, y);
       const [yv, u, v] = yuvPixel(data, width, height, format, source.x, source.y, offset);
@@ -375,16 +379,25 @@ export function renderYuvFrame(
         output.data[i + 3] = 255;
         continue;
       }
-      const c = yv - 16;
-      const d = u - 128;
-      const e = v - 128;
-      output.data[i] = clamp((298 * c + 409 * e + 128) >> 8);
-      output.data[i + 1] = clamp((298 * c - 100 * d - 208 * e + 128) >> 8);
-      output.data[i + 2] = clamp((298 * c + 516 * d + 128) >> 8);
+      const rgb = yuvToRgb(yv, u, v, candidate.colorMatrix, candidate.colorRange);
+      output.data[i] = rgb[0];
+      output.data[i + 1] = rgb[1];
+      output.data[i + 2] = rgb[2];
       output.data[i + 3] = 255;
     }
   }
   return output;
+}
+
+export function yuvToRgb(y: number, u: number, v: number, matrix = "bt601", range = "limited") {
+  if (matrix === "bt601" && range === "limited") {
+    const c = y - 16, d = u - 128, e = v - 128;
+    return [clamp((298*c+409*e+128)>>8), clamp((298*c-100*d-208*e+128)>>8), clamp((298*c+516*d+128)>>8)];
+  }
+  const [kr, kb] = matrix === "bt709" ? [.2126,.0722] : matrix === "bt2020" ? [.2627,.0593] : [.299,.114];
+  const yy = range === "full" ? y : (y-16)*255/219;
+  const cb = (u-128)*(range === "full" ? 1 : 255/224), cr = (v-128)*(range === "full" ? 1 : 255/224);
+  return [yy+2*(1-kr)*cr, yy-2*kb*(1-kb)/(1-kr-kb)*cb-2*kr*(1-kr)/(1-kr-kb)*cr, yy+2*(1-kb)*cb].map(n=>clamp(Math.round(n)));
 }
 
 function clamp(value: number) {
@@ -549,7 +562,10 @@ function parseH264Sps(payload: Uint8Array) {
 }
 
 function skipHevcProfileTierLevel(reader: BitReader, maxSubLayersMinus1: number) {
-  reader.skip(2 + 1 + 5 + 32 + 48 + 8);
+  const space=reader.read(2),tier=reader.read(),profile=reader.read(5),compatibility=reader.read(32);
+  let reversed=0;for(let bit=0;bit<32;bit++)reversed+=(Math.floor(compatibility/2**bit)%2)*2**(31-bit);
+  const constraints=Array.from({length:6},()=>reader.read(8));while(constraints.length>1&&constraints.at(-1)===0)constraints.pop();
+  const level=reader.read(8);
   const profilePresent: number[] = [];
   const levelPresent: number[] = [];
   for (let i = 0; i < maxSubLayersMinus1; i += 1) {
@@ -561,6 +577,7 @@ function skipHevcProfileTierLevel(reader: BitReader, maxSubLayersMinus1: number)
     if (profilePresent[i]) reader.skip(2 + 1 + 5 + 32 + 48);
     if (levelPresent[i]) reader.skip(8);
   }
+  return {profile,level,codecString:`hev1.${["","A","B","C"][space]}${profile}.${reversed.toString(16).toUpperCase()}.${tier?"H":"L"}${level}.${constraints.map(n=>n.toString(16).toUpperCase()).join(".")}`};
 }
 
 function parseH265Sps(payload: Uint8Array) {
@@ -569,7 +586,7 @@ function parseH265Sps(payload: Uint8Array) {
   reader.read(4);
   const maxSubLayersMinus1 = reader.read(3);
   reader.read();
-  skipHevcProfileTierLevel(reader, maxSubLayersMinus1);
+  const profileTier=skipHevcProfileTierLevel(reader, maxSubLayersMinus1);
   reader.ue();
   const chromaFormat = reader.ue();
   if (chromaFormat === 3) reader.read();
@@ -590,9 +607,9 @@ function parseH265Sps(payload: Uint8Array) {
   return {
     width: pictureWidth - subWidth * (left + right),
     height: pictureHeight - subHeight * (top + bottom),
-    profile: "HEVC",
-    level: undefined,
-    codecString: "hev1.1.6.L93.B0",
+    profile: profileTier.profile===1?"Main":profileTier.profile===2?"Main 10":`HEVC ${profileTier.profile}`,
+    level: String(profileTier.level/30),
+    codecString: profileTier.codecString,
   };
 }
 

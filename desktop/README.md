@@ -1,4 +1,4 @@
-# MediaLab Portable V0.0.8
+# MediaLab Portable V0.0.9
 
 Windows 64 位免安装的“视频码流与图像分析工具”。
 
@@ -7,6 +7,11 @@ Windows 64 位免安装的“视频码流与图像分析工具”。
 直接双击 `release/MediaLab-Windows/MediaLab.exe`。程序使用当前用户权限运行，不安装服务、不修改注册表、不需要管理员权限。
 
 ## 功能
+
+- 原始解码帧查看：从原文件提取，原始 Y/U/V Inspector 不读取播放代理；支持缩放、平移、Fit、全屏与 PNG 预览保存
+- Compare 时间/帧号对齐及右侧帧偏移，局部帧大小图支持范围拖动、滚轮与放大定位
+- YUV 色彩矩阵 BT.601/709/2020 和 Full/Limited；不修改原始 Y/U/V 采样值
+- 帧分析完成后即展示统计，播放代理后台生成；RAW/YUV 后台 Worker 和分阶段百分比进度
 
 - YUV / RAW / SYUV 自动识别、手动校正、预览与逐帧播放
 - YUV 支持 YUV/RGB、Y、U、V 显示；4:2:0 色度分量按原生半宽半高查看，保留原始采样值

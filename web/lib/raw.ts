@@ -136,7 +136,7 @@ export function detectRaw(
   };
 }
 
-export function decodeRaw(data: Uint8Array, config: RawConfig) {
+export function decodeRaw(data: Uint8Array, config: RawConfig, onProgress?: (percent: number) => void) {
   const expected = bytesForRawFrame(
     config.width,
     config.height,
@@ -156,6 +156,7 @@ export function decodeRaw(data: Uint8Array, config: RawConfig) {
     // MIPI RAW10: B0..B3 store P0..P3 bits [9:2]. B4 packs each pixel's low 2 bits.
     const rowBytes = Math.ceil(config.width / 4) * 5;
     for (let y = 0; y < config.height; y += 1) {
+      if (y % 32 === 0) onProgress?.(y / config.height * 100);
       let source = y * rowBytes;
       const rowEnd = (y + 1) * config.width;
       for (let target = y * config.width; target < rowEnd; target += 4, source += 5) {
@@ -168,6 +169,7 @@ export function decodeRaw(data: Uint8Array, config: RawConfig) {
   } else {
     const littleEndian = config.packing === "UNPACKED16_LE";
     for (let index = 0, offset = 0; index < pixels; index += 1, offset += 2) {
+      if (index % 65536 === 0) onProgress?.(index / pixels * 100);
       const word = littleEndian
         ? data[offset] | (data[offset + 1] << 8)
         : (data[offset] << 8) | data[offset + 1];
@@ -223,6 +225,7 @@ export function renderRawPreview(
   autoStretch: boolean,
   blackLevel: number,
   gain: number,
+  onProgress?: (percent: number) => void,
 ) {
   const output = new ImageData(config.width, config.height);
   const maximum = 2 ** config.bitDepth - 1;
@@ -242,6 +245,7 @@ export function renderRawPreview(
   };
 
   for (let y = 0; y < config.height; y += 1) {
+    if (y % 32 === 0) onProgress?.(y / config.height * 100);
     for (let x = 0; x < config.width; x += 1) {
       const index = y * config.width + x;
       const target = index * 4;

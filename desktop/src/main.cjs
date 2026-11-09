@@ -13,6 +13,7 @@ app.commandLine.appendSwitch("disable-features", "OutOfBlinkCors");
 let mainWindow;
 const tempOutputs = new Set();
 const children = new Map();
+const toolJobs=new Map();
 let generation = 0;
 let encoderChoice = null;
 
@@ -46,7 +47,7 @@ function toolPath(name) {
 
 function runTool(executable, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const { onStdout, ...spawnOptions } = options;
+    const { onStdout, onStderr, jobId, ...spawnOptions } = options;
     const child = spawn(executable, args, {
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
@@ -56,11 +57,14 @@ function runTool(executable, args, options = {}) {
     const stderr = [];
     let closed;
     children.set(child, new Promise(resolve => { closed = resolve; }));
+    if(jobId)toolJobs.set(jobId,child);
     child.stdout.on("data", (chunk) => { stdout.push(chunk); onStdout?.(chunk); });
-    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    let stderrSize=0;
+    child.stderr.on("data", (chunk) => {stderr.push(chunk);stderrSize+=chunk.length;while(stderrSize>4*1024*1024&&stderr.length>1)stderrSize-=stderr.shift().length;onStderr?.(chunk);});
     child.on("error", reject);
     child.on("close", (code) => {
       children.delete(child);
+      if(jobId&&toolJobs.get(jobId)===child)toolJobs.delete(jobId);
       closed();
       const out = Buffer.concat(stdout);
       const err = Buffer.concat(stderr).toString("utf8");
@@ -138,10 +142,12 @@ ipcMain.handle("read-slice", async (_event, filePath, start, length) => {
   }
 });
 
-ipcMain.handle("decode-heic", async (_event, filePath) => {
+ipcMain.handle("decode-heic", async (event, filePath,jobId) => {
   const epoch = generation;
+  progress(event,jobId,"读取 HEIC",0);
   const source = await fsp.readFile(filePath);
   checkSession(epoch);
+  progress(event,jobId,"提取 HEIC 图像",30);
   const extracted = extractHeicFrame(source);
   const base = path.basename(filePath, path.extname(filePath)).replace(/[^\w.-]+/g, "_");
   const input = path.join(
@@ -152,6 +158,7 @@ ipcMain.handle("decode-heic", async (_event, filePath) => {
   try {
     await fsp.writeFile(input, extracted.annexB);
     checkSession(epoch);
+    progress(event,jobId,"解码 HEIC",50);
     const { stdout } = await runTool(toolPath("ffmpeg"), [
       "-hide_banner",
       "-loglevel", "error",
@@ -163,6 +170,7 @@ ipcMain.handle("decode-heic", async (_event, filePath) => {
       "pipe:1"
     ]);
     checkSession(epoch);
+    progress(event,jobId,"HEIC 完成",100);
     return {
       bytes: stdout,
       width: extracted.width,
@@ -319,6 +327,34 @@ ipcMain.handle("create-proxy", async (event, filePath, kind, fps, frameCount = 0
 });
 
 ipcMain.handle("app-version", () => app.getVersion());
+ipcMain.handle("cancel-job",async(_event,id)=>{const child=toolJobs.get(id);if(child){const done=children.get(child);child.kill();await done;}});
+
+ipcMain.handle("extract-frame",async(event,filePath,kind,index,width,height,pixelFormat,jobId)=>{
+  const epoch=generation;
+  if(!Number.isInteger(index)||index<0||index>10000000)throw Error("无效帧号");
+  if(!Number.isInteger(width)||!Number.isInteger(height)||width*height>40000000)throw Error("无效分辨率");
+  if(!/^(yuv(420|422|444)p(10le|12le|16le)?|gray(10le|12le|16le)?)$/.test(pixelFormat))throw Error("原始采样查看暂不支持此像素格式："+pixelFormat);
+  const raw=path.join(os.tmpdir(),`MediaLab-frame-${Date.now()}-${Math.random().toString(16).slice(2)}.raw`);
+  tempOutputs.add(raw);
+  progress(event,jobId,"解码原始帧",0,"从原文件读取，不经过播放代理");
+  let tail="",last=0;
+  try{
+    const {stdout}=await runTool(toolPath("ffmpeg"),[
+      "-hide_banner","-loglevel","info","-f",kind==="h265"?"hevc":"h264","-i",filePath,
+      "-filter_complex",`[0:v]showinfo,select=eq(n\\,${index}),split[r][p];[p]format=rgb24[png]`,
+      "-map","[png]","-frames:v","1","-c:v","png","-f","image2pipe","pipe:1",
+      "-map","[r]","-frames:v","1","-c:v","rawvideo","-pix_fmt",pixelFormat,"-f","rawvideo","-y",raw
+    ],{jobId,onStderr(chunk){
+      tail+=chunk.toString();const matches=[...tail.matchAll(/\bn:\s*(\d+)/g)];tail=tail.slice(-150);
+      if(matches.length&&Date.now()-last>100&&epoch===generation){last=Date.now();progress(event,jobId,"解码原始帧",Math.min(98,Number(matches.at(-1)[1])/(index+1)*98));}
+    }});
+    checkSession(epoch);
+    if(!stdout.length)throw Error("该帧未成功解码，可能缺少参考帧");
+    const bytes=await fsp.readFile(raw);checkSession(epoch);
+    progress(event,jobId,"原始帧完成",100);
+    return {png:stdout,bytes,width,height,pixelFormat,index};
+  }finally{tempOutputs.delete(raw);await fsp.unlink(raw).catch(()=>{});}
+});
 ipcMain.handle("restart-app", () => {
   app.relaunch();
   app.exit(0);
